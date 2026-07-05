@@ -1,0 +1,46 @@
+{
+    "llm": {
+        "provider": "ollama",
+        "model": "deepseek-coder-6.7b",
+        "temperature": 0.3,
+        "available_models": [
+            {
+                "id": "deepseek-coder-6.7b-instruct",
+                "name": "Deepseek Coder v2 16B",
+                "pull_cmd": "ollama pull deepseek-coder-6.7b"
+            }
+        ]
+    },
+    "vectorstore": {
+        "chroma_dir": "./chroma_db",
+        "embedding_model": "nomic-embed-text"
+    },
+    "languages": {
+        "python": {
+            "test_framework": "pytest",
+            "file_suffix": "_test.py",
+            "display": "Python"
+        },
+        "java": {
+            "test_framework": "JUnit 5",
+            "file_suffix": "Test.java",
+            "display": "Java"
+        },
+        "csharp": {
+            "test_framework": "xUnit",
+            "file_suffix": "Tests.cs",
+            "display": "C#"
+        },
+        "javascript": {
+            "test_framework": "Jest",
+            "file_suffix": ".test.js",
+            "display": "JavaScript"
+        }
+    },
+    "server": {
+        "host": "0.0.0.0",
+        "port": 7860,
+        "debug": true,
+        "share": false
+    }
+}

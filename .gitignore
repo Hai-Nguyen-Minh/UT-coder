@@ -1,0 +1,6 @@
+# Ignore all CSV files in the core/dataset directory
+core/dataset/CodeRM_UnitTest.csv.csv
+core/dataset/CodeRM_UnitTest (test).csv
+*.csv
+# Ignore the fine-tuning output directory
+finetune_output/*.jsonl
