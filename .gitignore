@@ -1,5 +1,3 @@
-# Ignore all large CSV dataset files (over GitHub 100MB limit)
-core/dataset/**/*.csv
 
 # Ignore the fine-tuning output directory
 finetune_output/*.jsonl
