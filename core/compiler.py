@@ -146,6 +146,45 @@ def compile_check(
         f"and any code that would prevent compilation or execution."
     )
 
+    # ------------------------------------------------------------------
+    # Try Sandbox execution first
+    # ------------------------------------------------------------------
+    from core.sandbox import get_sandbox
+    sandbox = get_sandbox(language)
+    if sandbox.__class__.__name__ != "Sandbox":
+        # We have a real sandbox for this language
+        logger.info(f"Using actual Sandbox for compile check ({language})")
+        result = sandbox.run_test(file_name, source_code, test_code)
+        
+        if stream:
+            def _sandbox_stream(res):
+                if res.success:
+                    yield "✅ **Sandbox execution passed!**\nThe code compiled and the tests ran successfully without errors."
+                else:
+                    yield f"⚠️ **Sandbox execution failed.**\n\n```\n{res.error_log}\n```"
+            return _sandbox_stream(result)
+        else:
+            issues = []
+            if not result.success:
+                # Truncate error log if it's too long
+                err = result.error_log
+                if len(err) > 1000:
+                    err = err[-1000:]
+                issues.append({
+                    "description": err,
+                    "line_reference": "N/A",
+                    "suggestion": "Review the compiler/test runner output above."
+                })
+            return {
+                "has_issues": not result.success,
+                "issues": issues,
+                "overall_assessment": "Sandbox execution passed." if result.success else "Sandbox execution failed."
+            }
+
+    # ------------------------------------------------------------------
+    # Fallback to AI compilation check
+    # ------------------------------------------------------------------
+    logger.info("Sandbox not available, falling back to AI check")
     llm = get_llm()
 
     if stream:
@@ -164,7 +203,9 @@ def _full_check(llm, system_prompt: str, user_prompt: str) -> dict:
         {"role": "user", "content": user_prompt},
     ])
 
-    raw = response.content.strip()
+    raw_content = response.content
+    raw = "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in raw_content) if isinstance(raw_content, list) else str(raw_content)
+    raw = raw.strip()
 
     # Robust JSON extraction: handle markdown fences first
     fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", raw)
@@ -201,7 +242,9 @@ def _full_check(llm, system_prompt: str, user_prompt: str) -> dict:
                 {"role": "system", "content": "You only output valid JSON. Never include extra text or code."},
                 {"role": "user", "content": retry_prompt},
             ])
-            retry_raw = retry_response.content.strip()
+            retry_raw_content = retry_response.content
+            retry_raw = "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in retry_raw_content) if isinstance(retry_raw_content, list) else str(retry_raw_content)
+            retry_raw = retry_raw.strip()
             fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", retry_raw)
             if fence_match:
                 retry_raw = fence_match.group(1).strip()
@@ -229,7 +272,8 @@ def _stream_check(llm, system_prompt: str, user_prompt: str) -> Generator[str, N
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]):
-        yield chunk.content
+        content = chunk.content
+        yield "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in content) if isinstance(content, list) else str(content)
 
 
 def quick_assessment(test_code: str, file_name: str) -> str:
@@ -259,4 +303,6 @@ def quick_assessment(test_code: str, file_name: str) -> str:
         {"role": "user", "content": user_prompt},
     ])
 
-    return response.content.strip()
+    raw_content = response.content
+    raw = "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in raw_content) if isinstance(raw_content, list) else str(raw_content)
+    return raw.strip()

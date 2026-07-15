@@ -25,15 +25,17 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=1)
 def _get_embeddings() -> OllamaEmbeddings:
     """Return a cached OllamaEmbeddings instance using a dedicated embedding model."""
-    # FIX: Don't use the primary LLM model for embeddings.
-    # Check if you have an embedding model defined in config, otherwise fallback to a safe default.
     config = get_config()
 
     # Safely look for a dedicated embedding key, or fall back to 'nomic-embed-text'
     model = config.get("vectorstore", {}).get("embedding_model", "nomic-embed-text")
+    base_url = config.get("llm", {}).get("base_url", "http://ollama:11434")
 
     logger.info("Initialising OllamaEmbeddings with model: %s", model)
-    return OllamaEmbeddings(model=model)
+    return OllamaEmbeddings(
+        base_url=base_url,
+        model=model
+    )
 
 
 def _get_persist_dir() -> str:
@@ -78,6 +80,7 @@ def similarity_search(
     query: str,
     collection_name: str,
     k: int = 3,
+    filter: dict | None = None,
 ) -> List[Document]:
     """
     Retrieve the k most similar document chunks to the query.
@@ -86,6 +89,7 @@ def similarity_search(
         query:           Free-text query string.
         collection_name: ChromaDB collection to search.
         k:               Number of results to return.
+        filter:          Optional dictionary for metadata filtering.
 
     Returns:
         List of matching Document chunks (may be empty on error).
@@ -97,7 +101,7 @@ def similarity_search(
             embedding_function=_get_embeddings(),
             persist_directory=persist_dir,
         )
-        return vectorstore.similarity_search(query, k=k)
+        return vectorstore.similarity_search(query, k=k, filter=filter)
     except Exception as exc:
         logger.warning("ChromaDB similarity search failed: %s", exc)
         return []

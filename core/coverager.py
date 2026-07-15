@@ -147,6 +147,39 @@ def analyse_coverage(
         f"and suggestions for improving coverage."
     )
 
+    # ------------------------------------------------------------------
+    # Try Sandbox execution first
+    # ------------------------------------------------------------------
+    from core.sandbox import get_sandbox
+    sandbox = get_sandbox(language)
+    if sandbox.__class__.__name__ != "Sandbox":
+        logger.info(f"Using actual Sandbox for coverage check ({language})")
+        result = sandbox.run_test(file_name, source_code, test_code)
+        
+        if stream:
+            def _sandbox_stream(res):
+                if res.coverage is not None:
+                    mut_text = f"\nMutation Score: {res.mutation_score:.2f}%" if res.mutation_score is not None else ""
+                    yield f"📊 **Sandbox Coverage: {res.coverage:.1f}%**{mut_text}\n(Coverage measured directly from sandbox execution)"
+                else:
+                    yield "⚠️ **Sandbox execution failed.** Cannot measure coverage."
+            return _sandbox_stream(result)
+        else:
+            return {
+                "coverage_pct": result.coverage if result.coverage is not None else 0.0,
+                "covered_items": [],
+                "uncovered_items": [],
+                "covered_lines": [],
+                "uncovered_lines": [],
+                "suggestions": [
+                    "Coverage measured via Sandbox." if result.coverage is not None else "Sandbox execution failed."
+                ] + ([f"Mutation Score: {result.mutation_score:.2f}%"] if result.mutation_score is not None else [])
+            }
+
+    # ------------------------------------------------------------------
+    # Fallback to AI coverage check
+    # ------------------------------------------------------------------
+    logger.info("Sandbox not available, falling back to AI coverage check")
     llm = get_llm()
 
     if stream:
@@ -169,7 +202,9 @@ def _full_coverage(
         {"role": "user", "content": user_prompt},
     ])
 
-    raw = response.content.strip()
+    raw_content = response.content
+    raw = "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in raw_content) if isinstance(raw_content, list) else str(raw_content)
+    raw = raw.strip()
 
     # Robust JSON extraction: handle markdown fences first
     fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", raw)
@@ -225,7 +260,9 @@ def _full_coverage(
                 {"role": "system", "content": "You only output valid JSON. Never include markdown fences, extra text, or code."},
                 {"role": "user", "content": retry_prompt},
             ])
-            retry_raw = retry_response.content.strip()
+            retry_raw_content = retry_response.content
+            retry_raw = "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in retry_raw_content) if isinstance(retry_raw_content, list) else str(retry_raw_content)
+            retry_raw = retry_raw.strip()
             fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", retry_raw)
             if fence_match:
                 retry_raw = fence_match.group(1).strip()
@@ -263,7 +300,8 @@ def _stream_coverage(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]):
-        yield chunk.content
+        content = chunk.content
+        yield "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in content) if isinstance(content, list) else str(content)
 
 
 def coverage_summary(

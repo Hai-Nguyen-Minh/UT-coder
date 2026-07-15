@@ -1,12 +1,17 @@
 
+# Environment variables
+.env
+.env.*
+!.env.example
+
 # Ignore the fine-tuning output directory
 finetune_output/*.jsonl
 
 .idea/
 .venv/
-.idea/
 core/runner/__pycache__/*
 core/__pycache__/*
+core/sandbox/__pycache__/*
 ui/__pycache__/*
 __pycache__/*
 *.pyc
@@ -20,3 +25,15 @@ core/runner/ts_env/*
 core/runner/runtimes/*
 core/dataset/chroma_db/*
 chroma_db/
+
+# Logs
+*.log
+
+# Temporary deployment artifacts
+utcoder_server.zip
+
+# Test files (local only)
+test_*.py
+
+# IDE
+.vscode/

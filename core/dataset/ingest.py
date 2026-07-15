@@ -515,11 +515,29 @@ def evaluate_only(
     rows = rows[:num_samples]
     separator = "=" * 70
 
+    from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+    from core.sandbox import get_sandbox
+    
+    sandbox = get_sandbox("python") # Assuming dataset is python as per prompt
+
+    total_bleu = 0.0
+    exact_matches = 0
+    passed_sandbox = 0
+    valid_sandbox_runs = 0
+
     for i, row in enumerate(rows, 1):
         messages       = row["messages"]
         task_id        = row.get("task_id", "?")
         expected_code  = messages[-1]["content"]
         prompt_msgs    = messages[:-1]
+
+        # Extract source code from user message
+        user_msg = next((m["content"] for m in prompt_msgs if m["role"] == "user"), "")
+        source_code = ""
+        import re
+        code_match = re.search(r"Ground-truth solution \(Python\):\n```python\n(.*?)\n```", user_msg, re.DOTALL)
+        if code_match:
+            source_code = code_match.group(1).strip()
 
         try:
             prompt_text = tokenizer.apply_chat_template(
@@ -534,16 +552,54 @@ def evaluate_only(
 
         output = pipe(prompt_text)[0]["generated_text"]
         generated = output[len(prompt_text):].strip()
+        
+        # Clean markdown fences
+        fence_match = re.search(r"```(?:\w+)?\s*\n(.*?)\n```", generated, re.DOTALL)
+        if fence_match:
+            clean_code = fence_match.group(1).strip()
+        else:
+            clean_code = generated.strip()
+
+        # 1. Exact Match
+        is_exact = clean_code == expected_code.strip()
+        if is_exact:
+            exact_matches += 1
+
+        # 2. BLEU Score
+        expected_tokens = expected_code.split()
+        generated_tokens = clean_code.split()
+        chencherry = SmoothingFunction()
+        bleu = sentence_bleu([expected_tokens], generated_tokens, smoothing_function=chencherry.method1)
+        total_bleu += bleu
+
+        # 3. Sandbox Evaluation
+        sandbox_success = False
+        if source_code:
+            valid_sandbox_runs += 1
+            result = sandbox.run_test(f"task_{task_id}.py", source_code, clean_code)
+            if result.success:
+                sandbox_success = True
+                passed_sandbox += 1
 
         print(f"\n{separator}")
         print(f"Sample {i}/{num_samples}  |  task_id={task_id}")
+        print(f"Metrics: Exact Match = {is_exact}, BLEU = {bleu:.4f}, Sandbox Pass = {sandbox_success}")
         print(f"{separator}")
         print("── EXPECTED ──")
         print(expected_code[:600] + (" …" if len(expected_code) > 600 else ""))
         print("── GENERATED ──")
-        print(generated[:600] + (" …" if len(generated) > 600 else ""))
+        print(clean_code[:600] + (" …" if len(clean_code) > 600 else ""))
+
+    avg_bleu = total_bleu / len(rows) if rows else 0
+    exact_match_rate = exact_matches / len(rows) if rows else 0
+    sandbox_pass_rate = passed_sandbox / valid_sandbox_runs if valid_sandbox_runs else 0
 
     print(f"\n{separator}")
+    print(f"FINAL EVALUATION METRICS (N={len(rows)}):")
+    print(f"- Exact Match Rate: {exact_match_rate * 100:.2f}%")
+    print(f"- Average BLEU: {avg_bleu * 100:.2f}")
+    print(f"- Sandbox Pass Rate: {sandbox_pass_rate * 100:.2f}% ({passed_sandbox}/{valid_sandbox_runs})")
+    print(f"{separator}")
     logger.info("Evaluation complete for %d samples.", len(rows))
 
 

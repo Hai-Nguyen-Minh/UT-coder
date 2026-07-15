@@ -14,9 +14,10 @@ ollama>=0.2.0
 # Web UI
 gradio>=4.36.0
 
-torch
-datasets
-peft
-transformers
-trl
-bitsandbytes
+
+
+# Sandbox Evaluation
+pytest>=8.0.0
+pytest-cov>=5.0.0
+mutmut>=2.4.4
+nltk>=3.8.1

@@ -30,8 +30,6 @@ from core.generator import generate_unit_tests
 from core.llm import get_model_name
 
 # ── NEW AI analysis modules ──
-from core.compiler import compile_check, quick_assessment
-from core.coverager import analyse_coverage, coverage_summary
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +42,16 @@ def _clean_generated_code(code: str) -> str:
     """Clean LLM output to extract only the test code."""
     import re
 
-    fence_match = re.search(r"```(?:\w+)?\s*\n(.*?)\n```", code, re.DOTALL)
-    if fence_match:
-        code = fence_match.group(1)
+    # Find all code blocks
+    blocks = re.findall(r"```(?:[a-zA-Z0-9+#]+)?\s*\n(.*?)\n```", code, re.DOTALL)
+    if blocks:
+        # Assume the longest code block is the actual test code
+        code = max(blocks, key=len)
+    else:
+        # Fallback: if no ending fence but starting fence exists
+        match = re.search(r"```(?:[a-zA-Z0-9+#]+)?\s*\n(.*)", code, re.DOTALL)
+        if match:
+            code = match.group(1)
 
     code = re.sub(r"\A(?:#.*\n?)+", "", code)
     code = re.sub(r"\A\s*/\*[\s\S]*?\*/\s*", "", code)
@@ -105,105 +110,43 @@ def _write_temp(content: str, filename: str) -> str:
     return path
 
 
-def _build_compile_check_html(result: dict) -> str:
-    """Build an HTML block for compile check results."""
-    if not result:
-        return "<div style='color:var(--text-3);padding:20px;text-align:center;'>No compile check data yet.</div>"
+import html
 
-    has_issues = result.get("has_issues", False)
-    issues = result.get("issues", [])
-    assessment = result.get("overall_assessment", "")
-
-    status_icon = "✅" if not has_issues else "⚠️"
-    status_color = "var(--success)" if not has_issues else "var(--warning)"
-    status_text = "No issues found" if not has_issues else f"{len(issues)} issue(s) found"
-
-    html = f"""
-    <div style="margin-bottom:12px;">
-      <span style="font-size:1.4rem;color:{status_color};font-weight:700;">
-        {status_icon} {status_text}
-      </span>
-    </div>
-    """
-
-    if assessment:
-        html += f"<p style='color:var(--text-2);font-size:0.9rem;margin-bottom:16px;'>{assessment}</p>"
-
-    if issues:
-        html += '<div style="display:flex;flex-direction:column;gap:8px;">'
-        for i, issue in enumerate(issues, 1):
-            desc = issue.get("description", "Unknown issue")
-            line_ref = issue.get("line_reference", "")
-            suggestion = issue.get("suggestion", "")
-            html += f"""
-            <div style="background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.2);border-radius:8px;padding:12px;">
-              <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-                <strong style="color:var(--warning);font-size:0.85rem;">#{i}</strong>
-                {f'<code style="font-size:0.78rem;color:var(--text-3);background:var(--bg-input);padding:2px 8px;border-radius:4px;">{line_ref}</code>' if line_ref else ''}
-              </div>
-              <p style="margin:6px 0;color:var(--text-1);font-size:0.88rem;">{desc}</p>
-              {f'<p style="margin:0;color:var(--text-2);font-size:0.82rem;"><em>Suggestion:</em> {suggestion}</p>' if suggestion else ''}
-            </div>
-            """
-        html += "</div>"
-
-    return html
-
-
-def _build_coverage_html(result: dict) -> str:
-    """Build an HTML block for coverage analysis results."""
-    if not result:
-        return "<div style='color:var(--text-3);padding:20px;text-align:center;'>No coverage analysis yet.</div>"
-
-    pct = result.get("coverage_pct", 0.0)
-    covered_items = result.get("covered_items", [])
-    uncovered_items = result.get("uncovered_items", [])
-    suggestions = result.get("suggestions", [])
-
-    # Determine color based on percentage
-    if pct >= 80:
-        color = "var(--success)"
-    elif pct >= 50:
-        color = "var(--warning)"
-    else:
-        color = "var(--danger)"
-
-    html = f"""
+def generate_coverage_html(source_code: str, missing_lines: list[int], coverage_pct: float) -> str:
+    """Build an HTML block to visually show coverage."""
+    if not source_code:
+        return "<div style='color:var(--text-3);padding:20px;text-align:center;'>No code available for coverage view.</div>"
+        
+    color = "var(--success)" if coverage_pct >= 80 else ("var(--warning)" if coverage_pct >= 50 else "var(--danger)")
+    
+    out_html = f"""
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;">
-        <span style="font-size:2.5rem;font-weight:700;color:{color};">{pct:.0f}%</span>
+        <span style="font-size:2.5rem;font-weight:700;color:{color};">{coverage_pct:.0f}%</span>
         <div style="flex:1;height:10px;background:rgba(0,0,0,0.06);border-radius:5px;overflow:hidden;">
-          <div style="width:{pct}%;height:100%;background:linear-gradient(90deg,{color},var(--accent));border-radius:5px;transition:width 0.5s;"></div>
+          <div style="width:{coverage_pct}%;height:100%;background:linear-gradient(90deg,{color},var(--accent));border-radius:5px;transition:width 0.5s;"></div>
         </div>
       </div>
     </div>
     """
-
-    if covered_items:
-        html += '<div style="margin-bottom:12px;">'
-        html += '<span style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--success);font-weight:600;">✅ COVERED</span>'
-        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">'
-        for item in covered_items:
-            html += f'<span style="background:rgba(5,150,105,0.1);color:var(--success);font-size:0.78rem;padding:2px 10px;border-radius:12px;border:1px solid rgba(5,150,105,0.2);">{item}</span>'
-        html += '</div></div>'
-
-    if uncovered_items:
-        html += '<div style="margin-bottom:12px;">'
-        html += '<span style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--danger);font-weight:600;">❌ UNCOVERED</span>'
-        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">'
-        for item in uncovered_items:
-            html += f'<span style="background:rgba(220,38,38,0.07);color:var(--danger);font-size:0.78rem;padding:2px 10px;border-radius:12px;border:1px solid rgba(220,38,38,0.15);">{item}</span>'
-        html += '</div></div>'
-
-    if suggestions:
-        html += '<div style="margin-top:12px;">'
-        html += '<span style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--accent);font-weight:600;">💡 SUGGESTIONS</span>'
-        html += '<ul style="margin:6px 0 0 0;padding-left:20px;">'
-        for s in suggestions:
-            html += f'<li style="color:var(--text-2);font-size:0.85rem;margin-bottom:4px;">{s}</li>'
-        html += '</ul></div>'
-
-    return html
+    
+    out_html += "<div style='background: #1e1e1e; padding: 15px; border-radius: 8px; font-family: monospace; overflow-x: auto; line-height: 1.5; font-size: 14px;'>"
+    
+    lines = source_code.split("\n")
+    for i, line in enumerate(lines, 1):
+        is_missing = i in missing_lines
+        bg_color = "#3a1c1c" if is_missing else "transparent"
+        text_color = "#ffcccc" if is_missing else "#d4d4d4"
+        line_num_color = "#fca5a5" if is_missing else "#666666"
+        
+        escaped_line = html.escape(line)
+        if not escaped_line.strip():
+            escaped_line = " "
+            
+        out_html += f"<div style='background: {bg_color}; color: {text_color}; white-space: pre; padding: 0 4px;'><span style='color: {line_num_color}; width: 35px; display: inline-block; user-select: none;'>{i}</span>{escaped_line}</div>"
+        
+    out_html += "</div>"
+    return out_html
 
 
 # ---------------------------------------------------------------------------
@@ -235,13 +178,13 @@ def on_file_upload(file_obj):
         gr.update(interactive=True),
         source_code,
         file_path.name,
-        gr.update(value=source_code, language=lang),
+        gr.update(value=source_code, language=lang, label="Source File Input"),
         gr.update(interactive=True),
         gr.update(interactive=True),
     )
 
 
-def on_generate(file_obj):
+def on_generate(file_obj, use_reflection=False):
     """
     Streaming generator that:
     1. Reads the uploaded file
@@ -255,6 +198,7 @@ def on_generate(file_obj):
             "⚠️ Please upload a source file first.",
             "",
             gr.update(visible=False),
+            "",
         )
         return
 
@@ -270,115 +214,94 @@ def on_generate(file_obj):
             f"❌ Could not read file: {exc}",
             "",
             gr.update(visible=False),
+            "",
         )
         return
 
     model = get_model_name()
     accumulated = ""
+    reflection_logs = []
     out_filename = _output_filename(file_name)
 
     # Step 1: Indexing
     yield (
-        gr.update(value=accumulated, language=file_lang),
+        gr.update(value=accumulated, language=file_lang, label="Generated Test File Output"),
         f"⚙️ Indexing `{file_name}` into ChromaDB…",
         "",
         gr.update(visible=False),
+        "",
     )
 
     # Step 2: Generate
     try:
-        for token in generate_unit_tests(file_name, source_code):
-            accumulated += token
+        from core.generator import generate_with_reflection
+        
+        if use_reflection:
+            for status_msg, code_so_far, result_dict in generate_with_reflection(file_name, source_code, target_coverage=80.0):
+                accumulated = code_so_far
+                if any(x in status_msg for x in ["Attempt", "Sandbox", "Max retries"]):
+                    if not reflection_logs or reflection_logs[-1] != status_msg:
+                        reflection_logs.append(status_msg)
+                yield (
+                    gr.update(value=accumulated, language=file_lang, label="Generated Test File Output"),
+                    status_msg,
+                    "",
+                    gr.update(visible=False),
+                    "",
+                )
             yield (
-                gr.update(value=accumulated, language=file_lang),
-                f"🤖 Generating `{out_filename}` with **{model}**…",
+                gr.update(value=accumulated, language=file_lang, label="Generated Test File Output"),
+                f"✅ Reflection Generation complete!",
                 "",
                 gr.update(visible=False),
+                "",
             )
+        else:
+            for token in generate_unit_tests(file_name, source_code):
+                accumulated += token
+                yield (
+                    gr.update(value=accumulated, language=file_lang, label="Generated Test File Output"),
+                    f"🤖 Generating `{out_filename}` with **{model}**…",
+                    "",
+                    gr.update(visible=False),
+                    "",
+                )
     except Exception as exc:
         logger.exception("Generation failed")
         yield (
-            gr.update(value=accumulated, language=file_lang),
+            gr.update(value=accumulated, language=file_lang, label="Generated Test File Output"),
             f"❌ Generation error: {exc}",
             "",
             gr.update(visible=False),
+            "",
         )
         return
 
-    # Step 3: Clean + write download
     cleaned = _clean_generated_code(accumulated)
     tmp_path = _write_temp(cleaned, out_filename)
 
+    status_text = f"✅ Generated **{out_filename}** ({len(cleaned.splitlines())} lines)"
+    if reflection_logs:
+        log_str = "<br>".join([f"• {log}" for log in reflection_logs])
+        status_text += f"\n\n<div style='max-height:120px; overflow-y:auto; padding:10px; background:var(--bg-input); border-radius:6px; font-size:0.85rem;'><b>Self-Reflection Sandbox Log:</b><br>{log_str}</div>"
+
+    final_cov_html = ""
+    if use_reflection and 'result_dict' in locals() and result_dict:
+        final_cov_html = generate_coverage_html(source_code, result_dict.get('missing_lines', []), result_dict.get('coverage') or 0.0)
+
     yield (
-        gr.update(value=cleaned, language=file_lang),
-        f"✅ Generated **{out_filename}** ({len(cleaned.splitlines())} lines)",
+        gr.update(value=cleaned, language=file_lang, label="Generated Test File Output"),
+        status_text,
         cleaned,
         gr.update(visible=True, value=tmp_path, label=f"⬇ Download  {out_filename}"),
+        final_cov_html,
     )
-
-
-def on_compile_check(source_code, generated_code, source_filename):
-    """Run AI-based compile check on generated test code."""
-    if not source_code or not generated_code or not source_filename:
-        return (
-            _build_compile_check_html({}),
-            "⚠️ Please generate unit tests first.",
-        )
-
-    yield (
-        "<div style='color:var(--text-3);padding:20px;text-align:center;'>🔍 Running AI compile check…</div>",
-        "🔍 Analysing compilation correctness…",
-    )
-
-    try:
-        result = compile_check(source_code, generated_code, source_filename)
-        summary = quick_assessment(generated_code, source_filename)
-        html = _build_compile_check_html(result)
-
-        status = f"✅ Compile check: {summary}"
-        if result.get("has_issues"):
-            status = f"⚠️ Compile check found {len(result.get('issues', []))} issue(s) · {summary}"
-
-        yield (html, status)
-    except Exception as exc:
-        logger.exception("Compile check failed")
-        yield (
-            f"<div style='color:var(--danger);padding:20px;'>❌ Error: {exc}</div>",
-            f"❌ Compile check failed: {exc}",
-        )
-
-
-def on_coverage_analysis(source_code, generated_code, source_filename):
-    """Run AI-based coverage analysis on generated test code."""
-    if not source_code or not generated_code or not source_filename:
-        return (
-            _build_coverage_html({}),
-            "⚠️ Please generate unit tests first.",
-        )
-
-    yield (
-        "<div style='color:var(--text-3);padding:20px;text-align:center;'>📊 Running AI coverage analysis…</div>",
-        "📊 Analysing test coverage…",
-    )
-
-    try:
-        result = analyse_coverage(source_code, generated_code, source_filename)
-        summary = coverage_summary(source_code, generated_code, source_filename)
-        html = _build_coverage_html(result)
-
-        yield (html, f"✅ {summary}")
-    except Exception as exc:
-        logger.exception("Coverage analysis failed")
-        yield (
-            f"<div style='color:var(--danger);padding:20px;'>❌ Error: {exc}</div>",
-            f"❌ Coverage analysis failed: {exc}",
-        )
 
 
 def on_clear():
     """Reset all UI components to initial state."""
     return (
-        gr.update(value="", language=None),  # code_output
+        gr.update(value="", language=None, label="Code Output"),  # code_output
         "",  # status_bar
         gr.update(visible=False),  # lang_badge
         gr.update(interactive=False),  # btn_generate
@@ -391,6 +314,7 @@ def on_clear():
         _build_coverage_html({}),  # coverage_output
         "Ready.",  # analysis_status_bar
         gr.update(visible=False),  # btn_download_file
+        False,  # cb_reflection
     )
 
 
@@ -520,6 +444,10 @@ body, .gradio-container {
     border-radius: var(--radius) !important;
     min-height: 320px !important;
 }
+#code-output .cm-editor, #code-output .cm-scroller {
+    max-height: 70vh !important;
+    overflow-y: auto !important;
+}
 #code-output textarea {
     background: transparent !important;
     color: var(--text-1) !important;
@@ -533,10 +461,10 @@ body, .gradio-container {
     padding: 12px 16px !important;
 }
 
-label span, .label-wrap span {
-    color: var(--text-2) !important;
-    font-size: 0.8rem !important;
-    font-weight: 500 !important;
+.label-wrap span, .panel-label {
+    color: var(--text-2);
+    font-size: 0.8rem;
+    font-weight: 500;
     text-transform: uppercase;
     letter-spacing: .06em;
 }
@@ -593,11 +521,16 @@ label span, .label-wrap span {
     border-radius: 4px !important;
 }
 
-input, textarea, select {
+/* Input fields */
+input:not([type="checkbox"]):not([type="radio"]), textarea, select {
     background: var(--bg-panel) !important;
     border: 1px solid var(--border) !important;
     color: var(--text-1) !important;
     border-radius: 8px !important;
+    padding: 10px 14px !important;
+    font-size: 0.95rem !important;
+    transition: all 0.2s ease;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.02) !important;
 }
 input:focus, textarea:focus, select:focus {
     border-color: var(--primary) !important;
@@ -681,6 +614,14 @@ def create_app() -> gr.Blocks:
                         elem_id="btn-clear",
                         scale=1,
                     )
+                
+                with gr.Row():
+                    cb_reflection = gr.Checkbox(
+                        label="Use Self-Reflection Sandbox",
+                        value=False,
+                        interactive=True,
+                        elem_id="cb-reflection"
+                    )
 
                 # Model info tiles
                 gr.HTML(f"""
@@ -726,34 +667,11 @@ def create_app() -> gr.Blocks:
                                 visible=False,
                             )
 
-                    with gr.Tab("🔍 Compile Check (AI)"):
-                        with gr.Row():
-                            btn_compile_check = gr.Button(
-                                "🔍 Run AI Compile Check",
-                                variant="primary",
-                                elem_id="btn-compile-check",
-                                interactive=False,
-                            )
-
-                        compile_check_output = gr.HTML(
-                            value=_build_compile_check_html({}),
-                            elem_id="analysis-panel",
+                    with gr.Tab("📊 Visual Coverage"):
+                        visual_coverage_output = gr.HTML(
+                            value="<div style='color:var(--text-3);padding:20px;text-align:center;'>No coverage data yet. Enable Self-Reflection and run generation to see coverage.</div>",
+                            elem_id="visual-coverage-panel",
                         )
-
-                    with gr.Tab("📊 Coverage (AI)"):
-                        with gr.Row():
-                            btn_coverage = gr.Button(
-                                "📊 Run AI Coverage Analysis",
-                                variant="primary",
-                                elem_id="btn-coverage",
-                                interactive=False,
-                            )
-
-                        coverage_output = gr.HTML(
-                            value=_build_coverage_html({}),
-                            elem_id="analysis-panel",
-                        )
-
                 # Status bar for analysis operations
                 analysis_status_bar = gr.Markdown(
                     value="Ready.",
@@ -769,32 +687,22 @@ def create_app() -> gr.Blocks:
                 lang_badge, btn_generate,
                 source_code_state, source_filename_state,
                 code_output,
-                btn_compile_check, btn_coverage,
-            ],
+                            ],
         )
 
         btn_generate.click(
             fn=on_generate,
-            inputs=[file_input],
+            inputs=[file_input, cb_reflection],
             outputs=[
                 code_output, status_bar,
                 generated_code_state,
                 btn_download_file,
+                visual_coverage_output,
             ],
         )
 
-        btn_compile_check.click(
-            fn=on_compile_check,
-            inputs=[source_code_state, generated_code_state, source_filename_state],
-            outputs=[compile_check_output, analysis_status_bar],
-        )
-
-        btn_coverage.click(
-            fn=on_coverage_analysis,
-            inputs=[source_code_state, generated_code_state, source_filename_state],
-            outputs=[coverage_output, analysis_status_bar],
-        )
-
+        
+        
         btn_clear.click(
             fn=on_clear,
             inputs=[],
@@ -803,10 +711,10 @@ def create_app() -> gr.Blocks:
                 lang_badge, btn_generate,
                 source_code_state, source_filename_state,
                 generated_code_state,
-                btn_compile_check, btn_coverage,
-                compile_check_output, coverage_output,
+                                visual_coverage_output,
                 analysis_status_bar,
                 btn_download_file,
+                cb_reflection,
             ],
         )
 

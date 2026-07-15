@@ -1,0 +1,13 @@
+services:
+  utcoder:
+    build: .
+    container_name: ut-coder-server
+    network_mode: host
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python main.py
+    # Note: No 'ollama' service here!
+    # AI runs on a remote machine with GPU, connected via SSH tunnel.
+    # UI is accessible at http://<server-ip>:7860

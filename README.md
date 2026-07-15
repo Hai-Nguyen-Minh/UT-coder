@@ -77,6 +77,7 @@ UTcoder/
 │  │                                           │   │
 │  │  compiler.py  (LLM-as-compiler)           │   │
 │  │  coverager.py (LLM-as-coverage-analyst)   │   │
+│  │  sandbox/     (Pytest + Mutmut execution) │   │
 │  └──────────────────────────────────────────┘   │
 │                                                   │
 │  ┌──────────────────────────────────────────┐   │
@@ -160,18 +161,19 @@ User Uploads File
 │       └────────────────────────────────────┬──────┘
 │                                            │
 ├────────────────────────────────────────────┼──────┤
-│ 6. POST-PROCESSING                        │      │
+│ 6. POST-PROCESSING & SELF-REFLECTION      │      │
 │                                            ▼      │
 │    _clean_generated_code()                        │
 │       │ strip markdown fences (```...```)         │
-│       │ strip leading/trailing comments           │
-│       │ strip prose/explanations                  │
-│       │ Result: clean, executable test code       │
+│       │                                           │
+│    python_sandbox.py                              │
+│       │ run pytest + coverage + mutmut            │
+│       │ if coverage < 80% or error: feed error    │
+│       │ log back to LLM and retry (max 3 attempts)│
 │       └──────────────────────────────────────────┘
 │                                                  │
 │  User Sees:  ✓ Generated file ready for download │
-│             [Optional: Compile Check button]     │
-│             [Optional: Coverage Analysis button] │
+│             [Visual Coverage Highlighting UI]    │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -478,6 +480,7 @@ Three distinct interfaces targeting different developer workflows, all backed by
 | Deep Learning Pipeline (QLoRA + SFT + Grad. Checkpoint. + 8-bit Opt.) | 🟢 High | 🟢 High | 🟢 High | 🟢 High |
 | AI Compile Check (Virtual Compiler) | 🟡 Medium | 🟡 Medium | 🟢 High | 🟡 Medium |
 | AI Coverage Analysis (Virtual Coverage) | 🔴 Low | 🔴 Low | 🟢 High | 🔴 Low |
+| Self-Reflection Sandbox (Real Execution) | 🟢 High | 🟢 High | 🟢 High | 🟢 High |
 | Language-Aware Code Parsing | 🟢 High | 🟢 High | 🔴 Low | 🟢 High |
 | Dual-Interface Architecture | 🟢 High | 🟢 High | 🟡 Medium | 🟢 High |
 
@@ -522,16 +525,24 @@ The **fine-tuning pipeline** is particularly well-engineered for its target audi
 UTcoder/
 ├── main.py                          # Gradio UI entry point
 ├── server.py                        # HTTP REST API server
-├── config.json                      # Configuration (model, vectorstore, languages)
+├── prepare_server.py                # Server packaging utility (utcoder_server.zip)
+├── DEPLOYMENT.md                    # Server deployment guide
+├── config.json                      # Local configuration
+├── config.server.json               # Server configuration
+├── docker-compose.yml               # Local Docker compose
+├── docker-compose.server.yml        # Server Docker compose
 ├── requirements.txt                 # Python dependencies
 ├── core/
 │   ├── __init__.py                  # Core package
 │   ├── llm.py                       # Ollama LLM wrapper (cached singleton)
-│   ├── generator.py                 # Test generation pipeline (RAG + LLM)
+│   ├── generator.py                 # Test generation pipeline (RAG + LLM + Reflection)
 │   ├── vectorstore.py               # ChromaDB indexing & similarity search
 │   ├── code_parser.py               # Language detection & code chunking
 │   ├── compiler.py                  # AI-based compile checking
-│   ├── coverager.py                 # AI-based coverage analysis
+│   ├── coverager.py                 # Visual HTML coverage parser
+│   ├── sandbox/                     # Isolated test execution environment
+│   │   ├── base.py                  # Abstract Sandbox & SandboxResult interfaces
+│   │   └── python_sandbox.py        # Pytest, Coverage, and Mutmut integration
 │   ├── config.py                    # Config file loader
 │   └── dataset/
 │       ├── ingest.py                # Fine-tuning pipeline (LoRA/QLoRA)
