@@ -155,25 +155,36 @@ def analyse_coverage(
     if sandbox.__class__.__name__ != "Sandbox":
         logger.info(f"Using actual Sandbox for coverage check ({language})")
         result = sandbox.run_test(file_name, source_code, test_code)
+        coverage_valid = bool(
+            result.coverage_valid
+            or (result.execution_status == "unknown" and result.coverage is not None)
+        )
         
         if stream:
             def _sandbox_stream(res):
-                if res.coverage is not None:
-                    mut_text = f"\nMutation Score: {res.mutation_score:.2f}%" if res.mutation_score is not None else ""
-                    yield f"📊 **Sandbox Coverage: {res.coverage:.1f}%**{mut_text}\n(Coverage measured directly from sandbox execution)"
+                if coverage_valid and res.coverage is not None and res.success:
+                    yield f"📊 **Sandbox Coverage: {res.coverage:.1f}%**\n(Coverage measured directly from sandbox execution)"
+                elif coverage_valid and res.coverage is not None:
+                    yield f"Diagnostic Coverage: {res.coverage:.1f}% (pytest failed; not accepted)."
                 else:
                     yield "⚠️ **Sandbox execution failed.** Cannot measure coverage."
             return _sandbox_stream(result)
         else:
             return {
-                "coverage_pct": result.coverage if result.coverage is not None else 0.0,
+                "coverage_pct": result.coverage if coverage_valid and result.coverage is not None else 0.0,
                 "covered_items": [],
                 "uncovered_items": [],
                 "covered_lines": [],
                 "uncovered_lines": [],
                 "suggestions": [
-                    "Coverage measured via Sandbox." if result.coverage is not None else "Sandbox execution failed."
-                ] + ([f"Mutation Score: {result.mutation_score:.2f}%"] if result.mutation_score is not None else [])
+                    (
+                        "Coverage is valid and pytest passed."
+                        if result.success and coverage_valid
+                        else "Coverage is diagnostic only because pytest failed."
+                        if coverage_valid
+                        else f"Coverage is invalid; sandbox status: {result.execution_status}."
+                    )
+                ]
             }
 
     # ------------------------------------------------------------------

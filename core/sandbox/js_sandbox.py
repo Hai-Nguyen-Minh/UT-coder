@@ -5,7 +5,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from .base import Sandbox, SandboxResult
 
@@ -44,7 +44,13 @@ STRYKER_CONF = """module.exports = {
 class JavascriptSandbox(Sandbox):
     """Execution sandbox for JavaScript using Jest and Stryker."""
 
-    def run_test(self, file_name: str, source_code: str, test_code: str) -> SandboxResult:
+    def run_test(
+        self,
+        file_name: str,
+        source_code: str,
+        test_code: str,
+        project_files: Mapping[str, str] | None = None,
+    ) -> SandboxResult:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             
@@ -118,35 +124,10 @@ class JavascriptSandbox(Sandbox):
                     coverage_val = float(lines_cov)
                 except Exception as e:
                     logger.warning(f"Failed to parse jest coverage-summary.json: {e}")
-                    
-            # 5. Run Stryker for Mutation Testing
-            logger.info("Running stryker...")
-            stryker_process = subprocess.run(
-                [npx_exe, "stryker", "run"],
-                cwd=temp_dir,
-                capture_output=True,
-                text=True
-            )
-            
-            mut_stdout = stryker_process.stdout
-            mutation_score = self._extract_mutation_score(mut_stdout)
-            
             return SandboxResult(
                 success=True,
-                stdout=stdout + "\n" + mut_stdout,
-                stderr=stderr + "\n" + stryker_process.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 error_log="",
-                coverage=coverage_val,
-                mutation_score=mutation_score
+                coverage=coverage_val
             )
-            
-    def _extract_mutation_score(self, stryker_output: str) -> Optional[float]:
-        """Parse Stryker output for mutation score."""
-        # Output: "Mutation score: 85.71%"
-        match = re.search(r"Mutation score:\s*([0-9.]+)\s*%", stryker_output, re.IGNORECASE)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                return None
-        return None

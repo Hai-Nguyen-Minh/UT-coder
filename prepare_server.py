@@ -1,51 +1,95 @@
+"""Tạo gói triển khai tối giản cho máy chủ Ubuntu."""
+
+from __future__ import annotations
+
 import os
 import zipfile
+from pathlib import Path
 
-def create_server_zip():
-    target_zip = "utcoder_server.zip"
-    
-    # Thư mục và file cần đưa vào zip
-    include_dirs = ["core", "ui"]
-    include_files = [
-        "main.py", "server.py", "config.server.json", "docker-compose.server.yml", 
-        "Dockerfile", "requirements.txt", "uninstall.sh", "DEPLOYMENT.md"
-    ]
 
-    # Các pattern cần bỏ qua
-    exclude_patterns = ["__pycache__", ".pytest_cache", "chroma_db", ".git"]
+ROOT = Path(__file__).resolve().parent
+TARGET_ZIP = ROOT / "utcoder_server.zip"
+INCLUDE_DIRS = ("core", "ui", "chroma_db")
+INCLUDE_FILES = (
+    "main.py",
+    "server.py",
+    "config.json",
+    ".env.example",
+    ".dockerignore",
+    "docker-compose.server.yml",
+    "Dockerfile",
+    "requirements.txt",
+    "pytest.ini",
+    "uninstall.sh",
+    "core/dataset/valid_dataset.json",
+)
+EXCLUDED_DIR_NAMES = {
+    "__pycache__",
+    ".pytest_cache",
+    ".git",
+    "CodeRM_UnitTest",
+    "CodeRM_UnitTest (test)",
+}
+EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".log", ".csv", ".jsonl", ".md"}
+GENERATED_BENCHMARK_PREFIXES = (
+    "benchmark_results",
+    "benchmark_progress",
+    "benchmark_status",
+    "benchmark_summary",
+    "benchmark_paired_comparison",
+    "validity_stability",
+    "quality_score_distribution",
+    "quality_components",
+)
 
-    print(f"Creating {target_zip}...")
-    
-    with zipfile.ZipFile(target_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # Xử lý các thư mục
-        for d in include_dirs:
-            if not os.path.exists(d):
+
+def _should_include(path: Path) -> bool:
+    if path.suffix in EXCLUDED_SUFFIXES:
+        return False
+    if path.parent.name == "benchmark" and path.name.startswith(
+        GENERATED_BENCHMARK_PREFIXES
+    ):
+        return False
+    if path.suffix == ".json" and path.parent.name == "dataset":
+        return False
+    return True
+
+
+def create_server_zip(target_zip: Path = TARGET_ZIP) -> Path:
+    """Đóng gói runtime server; docker-compose.server.yml được đổi tên trong ZIP."""
+    target_zip = Path(target_zip).resolve()
+    print(f"Creating {target_zip.name}...")
+
+    with zipfile.ZipFile(target_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+        for directory_name in INCLUDE_DIRS:
+            directory = ROOT / directory_name
+            if not directory.exists():
                 continue
-            for root, dirs, files in os.walk(d):
-                # Loại bỏ các thư mục không cần thiết
-                dirs[:] = [d_name for d_name in dirs if d_name not in exclude_patterns]
-                
-                for file in files:
-                    if file.endswith(('.pyc', '.pyo')):
-                        continue
-                    file_path = os.path.join(root, file)
-                    # Ghi vào zip, arcname là đường dẫn tương đối
-                    zf.write(file_path, arcname=file_path)
+            for current_root, directories, files in os.walk(directory):
+                directories[:] = [
+                    name
+                    for name in directories
+                    if name not in EXCLUDED_DIR_NAMES and not name.endswith("_artifacts")
+                ]
+                for filename in files:
+                    file_path = Path(current_root) / filename
+                    if _should_include(file_path):
+                        archive.write(file_path, file_path.relative_to(ROOT).as_posix())
 
-        # Xử lý các file riêng lẻ
-        for f in include_files:
-            if os.path.exists(f):
-                arcname = f
-                # Tự động đổi tên khi nén vào zip
-                if f == "config.server.json":
-                    arcname = "config.json"
-                elif f == "docker-compose.server.yml":
-                    arcname = "docker-compose.yml"
-                    
-                zf.write(f, arcname=arcname)
+        for relative_name in INCLUDE_FILES:
+            file_path = ROOT / relative_name
+            if not file_path.exists():
+                continue
+            archive_name = (
+                "docker-compose.yml"
+                if relative_name == "docker-compose.server.yml"
+                else Path(relative_name).as_posix()
+            )
+            archive.write(file_path, archive_name)
 
-    print(f"Done! Server package is ready: {os.path.abspath(target_zip)}")
-    print("You can now copy the 'utcoder_server.zip' file to your Ubuntu server.")
+    print(f"Server package created: {target_zip}")
+    return target_zip
+
 
 if __name__ == "__main__":
     create_server_zip()

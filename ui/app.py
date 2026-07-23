@@ -3,15 +3,8 @@ ui/app.py
 ---------
 Gradio-based web interface for UTcoder.
 
-Features:
-- Drag-and-drop or click-to-upload source file
-- Auto-detected language badge
-- Streaming LLM output rendered as a code block
-- One-click download of the generated test file
-- AI-based compile check (without real compiler)
-- AI-based coverage analysis (without running tests)
-- Live status bar with model name and ChromaDB state
-- JSON export of analysis results
+Python-only Gradio interface. Every downloadable candidate passes through the
+same sandbox and self-reflection gate as the REST API.
 """
 
 from __future__ import annotations
@@ -26,7 +19,6 @@ import gradio as gr
 
 from core.code_parser import LANGUAGE_ICONS, detect_language
 from core.config import get_config
-from core.generator import generate_unit_tests
 from core.llm import get_model_name
 
 # ── NEW AI analysis modules ──
@@ -75,26 +67,11 @@ def _lang_badge(file_name: str) -> str:
 
 
 def _output_filename(original: str) -> str:
-    lang = detect_language(original)
-    cfg = get_config().get("languages", {}).get(lang, {})
-    suffix = cfg.get("file_suffix", "_test" + Path(original).suffix)
-    stem = Path(original).stem
-    return f"{stem}{suffix}"
+    return f"test_{Path(original).stem}.py"
 
 
 _EXT_TO_GRADIO_LANG = {
     ".py": "python",
-    ".java": "python",
-    ".cs": "python",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".c": "c",
-    ".cpp": "cpp",
-    ".h": "c",
-    ".hpp": "cpp",
 }
 
 
@@ -155,7 +132,7 @@ def generate_coverage_html(source_code: str, missing_lines: list[int], coverage_
 
 
 def on_file_upload(file_obj):
-    """React to file upload: detect language, show info badge, and store source code."""
+    """Đọc file Python và trả đúng năm output đã nối trong Gradio."""
     if file_obj is None:
         return (
             gr.update(value="", visible=False),
@@ -163,15 +140,21 @@ def on_file_upload(file_obj):
             "",
             "",
             gr.update(language=None),
-            gr.update(interactive=False),
-            gr.update(interactive=False),
         )
-    badge = _lang_badge(Path(file_obj.name).name)
     file_path = Path(file_obj.name)
     try:
         source_code = file_path.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:
         source_code = f"Error reading file: {exc}"
+    if file_path.suffix.lower() != ".py":
+        return (
+            gr.update(value="⚠️ UTcoder hiện chỉ hỗ trợ file **Python `.py`**.", visible=True),
+            gr.update(interactive=False),
+            source_code,
+            file_path.name,
+            gr.update(value=source_code, language=None, label="Unsupported source file"),
+        )
+    badge = _lang_badge(file_path.name)
     lang = _gradio_lang(file_path.name)
     return (
         gr.update(value=badge, visible=True),
@@ -179,18 +162,15 @@ def on_file_upload(file_obj):
         source_code,
         file_path.name,
         gr.update(value=source_code, language=lang, label="Source File Input"),
-        gr.update(interactive=True),
-        gr.update(interactive=True),
     )
 
 
-def on_generate(file_obj, use_reflection=False):
+def on_generate(file_obj):
     """
     Streaming generator that:
     1. Reads the uploaded file
-    2. Calls generate_unit_tests() which indexes to ChromaDB and streams LLM
-    3. Cleans generated code (strips markdown fences, prose, summary comments)
-    4. Writes download file and shows download button
+    2. Chạy RAG + LLM + sandbox + self-reflection
+    3. Chỉ cho tải candidate đã pass pytest và coverage gate
     """
     if file_obj is None:
         yield (
@@ -204,6 +184,15 @@ def on_generate(file_obj, use_reflection=False):
 
     file_path = Path(file_obj.name)
     file_name = file_path.name
+    if file_path.suffix.lower() != ".py":
+        yield (
+            gr.update(value="", language=None),
+            "❌ UTcoder hiện chỉ hỗ trợ file Python `.py`.",
+            "",
+            gr.update(visible=False),
+            "",
+        )
+        return
     file_lang = _gradio_lang(file_name) or None
 
     try:
@@ -221,6 +210,7 @@ def on_generate(file_obj, use_reflection=False):
     model = get_model_name()
     accumulated = ""
     reflection_logs = []
+    result_dict: dict = {}
     out_filename = _output_filename(file_name)
 
     # Step 1: Indexing
@@ -236,36 +226,21 @@ def on_generate(file_obj, use_reflection=False):
     try:
         from core.generator import generate_with_reflection
         
-        if use_reflection:
-            for status_msg, code_so_far, result_dict in generate_with_reflection(file_name, source_code, target_coverage=80.0):
-                accumulated = code_so_far
-                if any(x in status_msg for x in ["Attempt", "Sandbox", "Max retries"]):
-                    if not reflection_logs or reflection_logs[-1] != status_msg:
-                        reflection_logs.append(status_msg)
-                yield (
-                    gr.update(value=accumulated, language=file_lang, label="Generated Test File Output"),
-                    status_msg,
-                    "",
-                    gr.update(visible=False),
-                    "",
-                )
+        for status_msg, code_so_far, current_result in generate_with_reflection(
+            file_name, source_code, target_coverage=80.0
+        ):
+            accumulated = code_so_far or accumulated
+            if current_result:
+                result_dict = current_result
+            if not reflection_logs or reflection_logs[-1] != status_msg:
+                reflection_logs.append(status_msg)
             yield (
                 gr.update(value=accumulated, language=file_lang, label="Generated Test File Output"),
-                f"✅ Reflection Generation complete!",
+                status_msg,
                 "",
                 gr.update(visible=False),
                 "",
             )
-        else:
-            for token in generate_unit_tests(file_name, source_code):
-                accumulated += token
-                yield (
-                    gr.update(value=accumulated, language=file_lang, label="Generated Test File Output"),
-                    f"🤖 Generating `{out_filename}` with **{model}**…",
-                    "",
-                    gr.update(visible=False),
-                    "",
-                )
     except Exception as exc:
         logger.exception("Generation failed")
         yield (
@@ -278,16 +253,30 @@ def on_generate(file_obj, use_reflection=False):
         return
 
     cleaned = _clean_generated_code(accumulated)
+    accepted = bool(result_dict.get("success") and result_dict.get("meets_coverage"))
+    final_cov_html = generate_coverage_html(
+        source_code,
+        result_dict.get("missing_lines", []),
+        result_dict.get("coverage") or 0.0,
+    )
+    if not accepted:
+        coverage = result_dict.get("coverage")
+        coverage_text = f"{coverage:.1f}%" if isinstance(coverage, (int, float)) else "không hợp lệ"
+        yield (
+            gr.update(value=cleaned, language=file_lang, label="Candidate không đạt gate"),
+            f"❌ Không tạo file tải xuống: pytest/coverage gate chưa đạt (coverage: {coverage_text}).",
+            "",
+            gr.update(visible=False),
+            final_cov_html,
+        )
+        return
+
     tmp_path = _write_temp(cleaned, out_filename)
 
     status_text = f"✅ Generated **{out_filename}** ({len(cleaned.splitlines())} lines)"
     if reflection_logs:
         log_str = "<br>".join([f"• {log}" for log in reflection_logs])
         status_text += f"\n\n<div style='max-height:120px; overflow-y:auto; padding:10px; background:var(--bg-input); border-radius:6px; font-size:0.85rem;'><b>Self-Reflection Sandbox Log:</b><br>{log_str}</div>"
-
-    final_cov_html = ""
-    if use_reflection and 'result_dict' in locals() and result_dict:
-        final_cov_html = generate_coverage_html(source_code, result_dict.get('missing_lines', []), result_dict.get('coverage') or 0.0)
 
     yield (
         gr.update(value=cleaned, language=file_lang, label="Generated Test File Output"),
@@ -299,7 +288,7 @@ def on_generate(file_obj, use_reflection=False):
 
 
 def on_clear():
-    """Reset all UI components to initial state."""
+    """Reset đúng mười component được nối trong create_app()."""
     return (
         gr.update(value="", language=None, label="Code Output"),  # code_output
         "",  # status_bar
@@ -308,13 +297,9 @@ def on_clear():
         "",  # source_code_state
         "",  # source_filename_state
         "",  # generated_code_state
-        gr.update(interactive=False),  # btn_compile_check
-        gr.update(interactive=False),  # btn_coverage
-        _build_compile_check_html({}),  # compile_check_output
-        _build_coverage_html({}),  # coverage_output
+        "",  # visual_coverage_output
         "Ready.",  # analysis_status_bar
         gr.update(visible=False),  # btn_download_file
-        False,  # cb_reflection
     )
 
 
@@ -323,8 +308,6 @@ def on_clear():
 # ---------------------------------------------------------------------------
 
 CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
 :root {
     --bg-root:    #f6f8fa;
     --bg-panel:   #ffffff;
@@ -347,7 +330,7 @@ CUSTOM_CSS = """
 
 body, .gradio-container {
     background: var(--bg-root) !important;
-    font-family: 'Inter', sans-serif !important;
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif !important;
     color: var(--text-1) !important;
 }
 
@@ -437,7 +420,7 @@ body, .gradio-container {
 }
 
 #code-output {
-    font-family: 'JetBrains Mono', monospace !important;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace !important;
     font-size: 0.83rem !important;
     background: #ffffff !important;
     border: 1px solid var(--border) !important;
@@ -451,7 +434,7 @@ body, .gradio-container {
 #code-output textarea {
     background: transparent !important;
     color: var(--text-1) !important;
-    font-family: 'JetBrains Mono', monospace !important;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace !important;
 }
 
 .info-tile {
@@ -589,8 +572,7 @@ def create_app() -> gr.Blocks:
 
                 file_input = gr.File(
                     label="Upload source file",
-                    file_types=[".py", ".java", ".cs", ".js", ".jsx", ".mjs",
-                                ".cjs", ".ts", ".tsx"],
+                    file_types=[".py"],
                     elem_id="upload-box",
                 )
 
@@ -615,14 +597,6 @@ def create_app() -> gr.Blocks:
                         scale=1,
                     )
                 
-                with gr.Row():
-                    cb_reflection = gr.Checkbox(
-                        label="Use Self-Reflection Sandbox",
-                        value=False,
-                        interactive=True,
-                        elem_id="cb-reflection"
-                    )
-
                 # Model info tiles
                 gr.HTML(f"""
                 <div style="display:flex;flex-direction:column;gap:8px;">
@@ -636,7 +610,7 @@ def create_app() -> gr.Blocks:
                   </div>
                   <div class="info-tile">
                     <span style="color:var(--text-3);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em">EMBEDDINGS</span><br>
-                    <span style="color:var(--success);font-weight:600;font-size:.9rem">{model}</span>
+                    <span style="color:var(--success);font-weight:600;font-size:.9rem">{cfg['vectorstore']['embedding_model']}</span>
                   </div>
                 </div>
                 """)
@@ -669,7 +643,7 @@ def create_app() -> gr.Blocks:
 
                     with gr.Tab("📊 Visual Coverage"):
                         visual_coverage_output = gr.HTML(
-                            value="<div style='color:var(--text-3);padding:20px;text-align:center;'>No coverage data yet. Enable Self-Reflection and run generation to see coverage.</div>",
+                            value="<div style='color:var(--text-3);padding:20px;text-align:center;'>No coverage data yet. Run generation to see verified coverage.</div>",
                             elem_id="visual-coverage-panel",
                         )
                 # Status bar for analysis operations
@@ -692,7 +666,7 @@ def create_app() -> gr.Blocks:
 
         btn_generate.click(
             fn=on_generate,
-            inputs=[file_input, cb_reflection],
+            inputs=[file_input],
             outputs=[
                 code_output, status_bar,
                 generated_code_state,
@@ -714,7 +688,6 @@ def create_app() -> gr.Blocks:
                                 visual_coverage_output,
                 analysis_status_bar,
                 btn_download_file,
-                cb_reflection,
             ],
         )
 

@@ -1,13 +1,58 @@
 services:
   utcoder:
     build: .
+    image: utcoder-app:server
     container_name: ut-coder-server
     network_mode: host
     volumes:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - UTCODER_OLLAMA_BASE_URL=${UTCODER_OLLAMA_BASE_URL:-http://localhost:11434}
+      - UTCODER_LLM_MODEL=${UTCODER_LLM_MODEL:-qwen2.5-coder:7b}
+      - UTCODER_LLM_TEMPERATURE=${UTCODER_LLM_TEMPERATURE:-0.1}
+      - UTCODER_CHROMA_DIR=${UTCODER_CHROMA_DIR:-./chroma_db}
+      - UTCODER_EMBEDDING_MODEL=${UTCODER_EMBEDDING_MODEL:-nomic-embed-text}
+      - UTCODER_EVAL_COMPILE_TIMEOUT=${UTCODER_EVAL_COMPILE_TIMEOUT:-10}
+      - UTCODER_EVAL_COLLECTION_TIMEOUT=${UTCODER_EVAL_COLLECTION_TIMEOUT:-30}
+      - UTCODER_EVAL_BASELINE_TIMEOUT=${UTCODER_EVAL_BASELINE_TIMEOUT:-30}
+      - UTCODER_EVAL_COVERAGE_TIMEOUT=${UTCODER_EVAL_COVERAGE_TIMEOUT:-45}
+      - UTCODER_EVAL_MEMORY_MB=${UTCODER_EVAL_MEMORY_MB:-768}
+      - UTCODER_EVAL_MUTATION_TIMEOUT=${UTCODER_EVAL_MUTATION_TIMEOUT:-180}
+      - UTCODER_EVAL_MUTATION_CHILDREN=${UTCODER_EVAL_MUTATION_CHILDREN:-2}
+      - UTCODER_EVAL_MUTATION_MEMORY_MB=${UTCODER_EVAL_MUTATION_MEMORY_MB:-1536}
+      - UTCODER_EVAL_MAX_PROCESSES=${UTCODER_EVAL_MAX_PROCESSES:-32}
     command: python main.py
-    # Note: No 'ollama' service here!
-    # AI runs on a remote machine with GPU, connected via SSH tunnel.
-    # UI is accessible at http://<server-ip>:7860
+    restart: unless-stopped
+    # Không có service Ollama: AI chạy trên máy GPU local và được nối bằng reverse SSH.
+    # UI truy cập tại http://<server-ip>:7860
+
+  utcoder-api:
+    image: utcoder-app:server
+    container_name: ut-coder-api
+    network_mode: host
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - UTCODER_OLLAMA_BASE_URL=${UTCODER_OLLAMA_BASE_URL:-http://localhost:11434}
+      - UTCODER_LLM_MODEL=${UTCODER_LLM_MODEL:-qwen2.5-coder:7b}
+      - UTCODER_LLM_TEMPERATURE=${UTCODER_LLM_TEMPERATURE:-0.1}
+      - UTCODER_CHROMA_DIR=${UTCODER_CHROMA_DIR:-./chroma_db}
+      - UTCODER_EMBEDDING_MODEL=${UTCODER_EMBEDDING_MODEL:-nomic-embed-text}
+      - UTCODER_API_HOST=${UTCODER_API_HOST:-127.0.0.1}
+      - UTCODER_API_PORT=${UTCODER_API_PORT:-8000}
+      - UTCODER_API_TOKEN=${UTCODER_API_TOKEN:-}
+      - UTCODER_API_MAX_REQUEST_BYTES=${UTCODER_API_MAX_REQUEST_BYTES:-2097152}
+      - UTCODER_EVAL_COMPILE_TIMEOUT=${UTCODER_EVAL_COMPILE_TIMEOUT:-10}
+      - UTCODER_EVAL_COLLECTION_TIMEOUT=${UTCODER_EVAL_COLLECTION_TIMEOUT:-30}
+      - UTCODER_EVAL_BASELINE_TIMEOUT=${UTCODER_EVAL_BASELINE_TIMEOUT:-30}
+      - UTCODER_EVAL_COVERAGE_TIMEOUT=${UTCODER_EVAL_COVERAGE_TIMEOUT:-45}
+      - UTCODER_EVAL_MEMORY_MB=${UTCODER_EVAL_MEMORY_MB:-768}
+      - UTCODER_EVAL_MUTATION_TIMEOUT=${UTCODER_EVAL_MUTATION_TIMEOUT:-180}
+      - UTCODER_EVAL_MUTATION_CHILDREN=${UTCODER_EVAL_MUTATION_CHILDREN:-2}
+      - UTCODER_EVAL_MUTATION_MEMORY_MB=${UTCODER_EVAL_MUTATION_MEMORY_MB:-1536}
+      - UTCODER_EVAL_MAX_PROCESSES=${UTCODER_EVAL_MAX_PROCESSES:-32}
+    command: python server.py
+    restart: unless-stopped
+    # API mặc định chỉ listen loopback; VS Code kết nối qua SSH local-forward.

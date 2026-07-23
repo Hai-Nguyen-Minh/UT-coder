@@ -9,17 +9,25 @@ from functools import lru_cache
 from langchain_ollama import ChatOllama
 from core.config import get_config
 
+
 @lru_cache(maxsize=1)
 def get_llm() -> ChatOllama:
-    """Return a cached ChatOllama instance configured from config.json."""
+    """Return a ChatOllama instance configured from config.json."""
     cfg = get_config()["llm"]
     return ChatOllama(
         base_url=cfg.get("base_url", "http://ollama:11434"),
         model=cfg["model"],
         temperature=cfg.get("temperature", 0.3),
+        num_ctx=8192,
+        timeout=120.0,
     )
 
 
 def get_model_name() -> str:
     """Return the configured model name string."""
     return get_config()["llm"]["model"]
+
+
+def clear_llm_cache() -> None:
+    """Force the next request to build a client for the current model config."""
+    get_llm.cache_clear()

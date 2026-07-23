@@ -26,41 +26,30 @@ RUN add-apt-repository ppa:deadsnakes/ppa -y && \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 && \
     update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
 
-# 2. Install Java 21 & Maven
-RUN apt-get update && apt-get install -y \
-    openjdk-21-jdk \
-    maven \
-    && rm -rf /var/lib/apt/lists/*
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-
-# 3. Install Node.js (v22.x)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get update && apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
-
-# 4. Install .NET SDK (8.0 as it's the stable LTS on Ubuntu 22.04, compatible with most code)
-# Microsoft package repo
-RUN wget https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb && \
-    dpkg -i packages-microsoft-prod.deb && \
-    rm packages-microsoft-prod.deb && \
-    apt-get update && apt-get install -y dotnet-sdk-8.0 && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install .NET global tools needed for Sandbox
-RUN dotnet tool install -g dotnet-stryker
-ENV PATH="$PATH:/root/.dotnet/tools"
+# Dedicated identity for executing AI-generated tests. Do not reuse Ubuntu's
+# global `nobody` account: RLIMIT_NPROC is counted per real UID, so unrelated
+# processes using `nobody` can make exec() fail with EAGAIN.
+ARG UTCODER_SANDBOX_UID=10001
+ARG UTCODER_SANDBOX_GID=10001
+RUN groupadd --gid "${UTCODER_SANDBOX_GID}" utcoder-sandbox && \
+    useradd --uid "${UTCODER_SANDBOX_UID}" \
+            --gid "${UTCODER_SANDBOX_GID}" \
+            --no-create-home \
+            --home-dir /nonexistent \
+            --shell /usr/sbin/nologin \
+            utcoder-sandbox
+ENV UTCODER_SANDBOX_USER=utcoder-sandbox
 
 # Create app directory
 WORKDIR /app
 
 # Install Python requirements
 COPY requirements.txt .
-# Add the new sandbox dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
-RUN pip3 install --no-cache-dir pytest pytest-cov mutmut nltk
-
-# Download NLTK data for BLEU
-RUN python3 -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab')"
+COPY core/sandbox/requirements-eval.txt ./core/sandbox/requirements-eval.txt
+# Install the application plus the exact Ubuntu benchmark evaluator stack.
+RUN pip3 install --no-cache-dir \
+    -r requirements.txt \
+    -r core/sandbox/requirements-eval.txt
 
 # Copy the rest of the application
 COPY . .

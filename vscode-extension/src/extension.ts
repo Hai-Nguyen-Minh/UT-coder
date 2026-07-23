@@ -1,12 +1,12 @@
 /**
  * UTcoder VS Code Extension
  *
- * Simplified version:
- *   - Right-click any supported file in Explorer or Editor
+ * Python client:
+ *   - Right-click a Python file in Explorer or Editor
  *   - Sends file content to UTcoder HTTP server
- *   - Receives generated unit test code
+ *   - Receives sandbox-verified generated unit test code
  *   - Creates test file alongside source file
- *   - No compilation, coverage, bootstrap, or runners
+ *   - The server performs pytest, coverage, and self-reflection
  */
 
 import * as vscode from 'vscode';
@@ -15,60 +15,38 @@ import * as fs from 'fs';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
-const SUPPORTED_EXTENSIONS = new Set([
-    '.py', '.java', '.cs',
-    '.js', '.jsx', '.mjs', '.cjs',
-    '.ts', '.tsx',
-]);
-
-const EXT_TO_LANG: Record<string, string> = {
-    '.py': 'python',
-    '.java': 'java',
-    '.cs': 'csharp',
-    '.js': 'javascript',
-    '.jsx': 'javascript',
-    '.mjs': 'javascript',
-    '.cjs': 'javascript',
-    '.ts': 'typescript',
-    '.tsx': 'typescript',
-};
+const SUPPORTED_EXTENSIONS = new Set(['.py']);
+const API_TOKEN_SECRET = 'utcoder.apiToken';
+let extensionContext: vscode.ExtensionContext | undefined;
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 
 interface ServerConfig {
     url: string;
     timeout: number;
+    token: string;
 }
 
-function getServerConfig(): ServerConfig {
+async function getServerConfig(): Promise<ServerConfig> {
     const cfg = vscode.workspace.getConfiguration('utcoder');
     return {
         url: cfg.get<string>('serverUrl', 'http://localhost:8000'),
         timeout: cfg.get<number>('serverTimeout', 120000),
+        token: (await extensionContext?.secrets.get(API_TOKEN_SECRET)) || '',
     };
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function detectLanguage(fileName: string): string {
-    return EXT_TO_LANG[path.extname(fileName).toLowerCase()] || 'unknown';
+    return path.extname(fileName).toLowerCase() === '.py' ? 'python' : 'unknown';
 }
 
 function getTestFileName(sourceFileName: string): string {
     const ext = path.extname(sourceFileName).toLowerCase();
     const stem = path.basename(sourceFileName, ext);
 
-    switch (ext) {
-        case '.py':  return `test_${stem}.py`;
-        case '.java': return `${stem}Test.java`;
-        case '.cs':  return `${stem}Tests.cs`;
-        case '.js': case '.jsx': case '.mjs': case '.cjs':
-            return `${stem}.test.js`;
-        case '.ts': case '.tsx':
-            return `${stem}.test.ts`;
-        default:
-            return `test_${sourceFileName}`;
-    }
+    return ext === '.py' ? `test_${stem}.py` : `test_${sourceFileName}`;
 }
 
 async function readFileContent(filePath: string): Promise<string> {
@@ -86,36 +64,86 @@ function getFileToProcess(uri?: vscode.Uri): string | undefined {
 
 interface GenerateResponse {
     success: boolean;
+    accepted?: boolean;
     code?: string;
     error?: string;
+    coverage?: number | null;
+    execution_status?: string;
+    status?: string;
+    test_file_name?: string;
 }
 
 interface HealthResponse {
     ready: boolean;
     message: string;
     version?: string;
+    language?: string;
 }
 
 // ─── HTTP client ───────────────────────────────────────────────────────────
+
+function requestHeaders(config: ServerConfig): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (config.token) {
+        headers.Authorization = `Bearer ${config.token}`;
+    }
+    return headers;
+}
+
+async function fetchWithTimeout(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+    externalSignal?: AbortSignal,
+): Promise<Response> {
+    const controller = new AbortController();
+    let timedOut = false;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal?.aborted) {
+        controller.abort();
+    } else {
+        externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutMs);
+
+    try {
+        return await fetch(url, { ...init, signal: controller.signal });
+    } catch (error) {
+        if (timedOut) {
+            throw new Error(`Request timed out after ${timeoutMs} ms`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timer);
+        externalSignal?.removeEventListener('abort', onExternalAbort);
+    }
+}
 
 async function callGenerateAPI(
     fileName: string,
     sourceCode: string,
     signal?: AbortSignal,
 ): Promise<GenerateResponse> {
-    const config = getServerConfig();
+    const config = await getServerConfig();
     const url = `${config.url.replace(/\/+$/, '')}/api/generate`;
 
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            file_name: fileName,
-            source_code: sourceCode,
-            language: detectLanguage(fileName),
-        }),
+    const response = await fetchWithTimeout(
+        url,
+        {
+            method: 'POST',
+            headers: requestHeaders(config),
+            body: JSON.stringify({
+                file_name: fileName,
+                source_code: sourceCode,
+                language: detectLanguage(fileName),
+            }),
+        },
+        config.timeout,
         signal,
-    });
+    );
 
     if (!response.ok) {
         const text = await response.text().catch(() => 'No response body');
@@ -126,12 +154,21 @@ async function callGenerateAPI(
 }
 
 async function healthCheck(signal?: AbortSignal): Promise<HealthResponse> {
-    const config = getServerConfig();
+    const config = await getServerConfig();
     const url = `${config.url.replace(/\/+$/, '')}/api/health`;
 
-    const response = await fetch(url, { signal });
+    const response = await fetchWithTimeout(
+        url,
+        { headers: requestHeaders(config) },
+        Math.min(config.timeout, 10000),
+        signal,
+    );
     if (!response.ok) {
-        return { ready: false, message: `Server returned ${response.status}` };
+        const payload = await response.json().catch(() => ({})) as Partial<HealthResponse> & { error?: string };
+        return {
+            ready: false,
+            message: payload.message || payload.error || `Server returned ${response.status}`,
+        };
     }
     return (await response.json()) as HealthResponse;
 }
@@ -150,7 +187,7 @@ async function generateTestsForFile(uri?: vscode.Uri) {
     const ext = path.extname(filePath).toLowerCase();
     if (!SUPPORTED_EXTENSIONS.has(ext)) {
         vscode.window.showWarningMessage(
-            `UTcoder: Unsupported file type "${ext}". Supported: ${[...SUPPORTED_EXTENSIONS].join(', ')}`,
+            `UTcoder currently supports Python .py files only (received "${ext}").`,
         );
         return;
     }
@@ -164,6 +201,8 @@ async function generateTestsForFile(uri?: vscode.Uri) {
             cancellable: true,
         },
         async (progress, token) => {
+            const requestController = new AbortController();
+            token.onCancellationRequested(() => requestController.abort());
             progress.report({ message: 'Reading file...' });
             let sourceCode: string;
             try {
@@ -177,9 +216,7 @@ async function generateTestsForFile(uri?: vscode.Uri) {
 
             progress.report({ message: 'Connecting to UTcoder server...' });
             try {
-                const health = await healthCheck(
-                    token.isCancellationRequested ? AbortSignal.abort() : undefined,
-                );
+                const health = await healthCheck(requestController.signal);
                 if (!health.ready) {
                     const action = await vscode.window.showErrorMessage(
                         `UTcoder server not reachable: ${health.message}`,
@@ -206,9 +243,11 @@ async function generateTestsForFile(uri?: vscode.Uri) {
 
             let result: GenerateResponse;
             try {
-                const ctrl = new AbortController();
-                token.onCancellationRequested(() => ctrl.abort());
-                result = await callGenerateAPI(fileName, sourceCode, ctrl.signal);
+                result = await callGenerateAPI(
+                    fileName,
+                    sourceCode,
+                    requestController.signal,
+                );
             } catch (err: any) {
                 const msg =
                     err?.name === 'AbortError'
@@ -219,8 +258,13 @@ async function generateTestsForFile(uri?: vscode.Uri) {
             }
 
             if (!result.success || !result.code) {
+                const diagnostic = [
+                    result.error,
+                    result.execution_status ? `status=${result.execution_status}` : '',
+                    typeof result.coverage === 'number' ? `coverage=${result.coverage.toFixed(1)}%` : '',
+                ].filter(Boolean).join(', ');
                 vscode.window.showErrorMessage(
-                    `UTcoder: Generation failed - ${result.error || 'Unknown error'}`,
+                    `UTcoder: Generation was not accepted - ${diagnostic || 'Unknown error'}`,
                 );
                 return;
             }
@@ -228,7 +272,7 @@ async function generateTestsForFile(uri?: vscode.Uri) {
             progress.report({ message: 'Writing test file...' });
             if (token.isCancellationRequested) return;
 
-            const testFileName = getTestFileName(fileName);
+            const testFileName = result.test_file_name || getTestFileName(fileName);
             let outputDir = path.dirname(filePath);
 
             // Try to use workspace tests/ directory
@@ -284,8 +328,11 @@ async function generateTestsForFile(uri?: vscode.Uri) {
                 // ignore
             }
 
+            const coverageText = typeof result.coverage === 'number'
+                ? ` (${result.coverage.toFixed(1)}% coverage)`
+                : '';
             vscode.window.showInformationMessage(
-                `UTcoder: ✅ Tests generated → ${testFileName}`,
+                `UTcoder: ✅ Verified tests generated → ${testFileName}${coverageText}`,
             );
         },
     );
@@ -294,6 +341,7 @@ async function generateTestsForFile(uri?: vscode.Uri) {
 // ─── Activation ────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext) {
+    extensionContext = context;
     console.log('[UTcoder] Activating simplified extension...');
 
     const generateCmd = vscode.commands.registerCommand(
@@ -338,7 +386,26 @@ export function activate(context: vscode.ExtensionContext) {
         },
     );
 
-    context.subscriptions.push(generateCmd, healthCmd);
+    const tokenCmd = vscode.commands.registerCommand(
+        'utcoder.setApiToken',
+        async () => {
+            const token = await vscode.window.showInputBox({
+                prompt: 'Bearer token matching UTCODER_API_TOKEN (leave empty to remove)',
+                password: true,
+                ignoreFocusOut: true,
+            });
+            if (token === undefined) return;
+            if (token.trim()) {
+                await context.secrets.store(API_TOKEN_SECRET, token.trim());
+                vscode.window.showInformationMessage('UTcoder API token saved securely.');
+            } else {
+                await context.secrets.delete(API_TOKEN_SECRET);
+                vscode.window.showInformationMessage('UTcoder API token removed.');
+            }
+        },
+    );
+
+    context.subscriptions.push(generateCmd, healthCmd, tokenCmd);
 
     // Background health check on activation
     healthCheck().then((health) => {
@@ -351,5 +418,6 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
+    extensionContext = undefined;
     console.log('[UTcoder] Deactivated.');
 }

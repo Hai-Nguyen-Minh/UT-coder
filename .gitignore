@@ -1,39 +1,74 @@
-
-# Environment variables
+# Biến môi trường và bí mật cục bộ
 .env
 .env.*
 !.env.example
 
-# Ignore the fine-tuning output directory
-finetune_output/*.jsonl
-
-.idea/
+# Python
 .venv/
-core/runner/__pycache__/*
-core/__pycache__/*
-core/sandbox/__pycache__/*
-ui/__pycache__/*
-__pycache__/*
-*.pyc
-node_modules/*
-core/runner/js_env/*
-core/runner/dotnet_env/*
-core/runner/java_env/*
-core/runner/cs_env/*
-core/runner/py_env/*
-core/runner/ts_env/*
-core/runner/runtimes/*
-core/dataset/chroma_db/*
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.json
+htmlcov/
+
+# IDE / hệ điều hành / công cụ agent cục bộ
+.idea/
+.vscode/
+.agents/
+.codex/
+.DS_Store
+Thumbs.db
+
+# Dependency và môi trường runtime sinh tự động
+node_modules/
+vscode-extension/node_modules/
+core/runner/js_env/
+core/runner/dotnet_env/
+core/runner/java_env/
+core/runner/cs_env/
+core/runner/py_env/
+core/runner/ts_env/
+core/runner/runtimes/
+
+# Vector DB/runtime state: tái tạo từ core/dataset/valid_dataset.json
 chroma_db/
+core/dataset/chroma_db/
 
-# Logs
+# Fine-tuning output, checkpoint và model sinh ra
+finetune_output/
+checkpoints/
+*.ckpt
+*.safetensors
+
+# Log, báo cáo benchmark và artifact triển khai
 *.log
-
-# Temporary deployment artifacts
+/benchmark_results.csv
+/core/benchmark/benchmark_results*.json
+/core/benchmark/benchmark_results*.jsonl
+/core/benchmark/benchmark_results*.png
+/core/benchmark/benchmark_results*.pdf
+/core/benchmark/benchmark_progress.log
+/core/benchmark/benchmark_status.txt
+/core/benchmark/benchmark_summary*.csv
+/core/benchmark/benchmark_status_counts.csv
+/core/benchmark/benchmark_paired_comparison.csv
+/core/benchmark/validity_stability.*
+/core/benchmark/quality_score_distribution.*
+/core/benchmark/quality_components.*
+*_artifacts/
 utcoder_server.zip
 
-# Test files (local only)
-test_*.py
+# File trung gian khi chuẩn hóa/kiểm tra dataset
+core/dataset/debug_*.json
+core/dataset/*.before_*.json
+/invalid_dataset.json
 
-# IDE
-.vscode/
+# Script/test tạm đặt ở thư mục gốc. Tests chính thức trong tests/ vẫn được commit.
+/test_*.py
+/task_*.py

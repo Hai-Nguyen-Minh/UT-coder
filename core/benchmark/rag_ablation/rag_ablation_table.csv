@@ -1,0 +1,3 @@
+Condition,Tasks,CompileCollectionFirst_pct,ContextErrorFirst_pct,EventualAccepted_pct,FinalScore_mean_pct,FinalScore_n
+RAG_OFF,20,85.0,80.0,10.0,8.625,20
+RAG_ON,20,85.0,45.0,20.0,18.071559999999998,20

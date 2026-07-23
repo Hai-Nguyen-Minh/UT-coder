@@ -1,24 +1,19 @@
 {
     "llm": {
         "provider": "ollama",
-        "base_url": "http://ollama:11434",
+        "base_url": "http://localhost:11434",
         "model": "qwen2.5-coder:7b",
-        "temperature": 0.3,
+        "temperature": 0.1,
         "available_models": [
-            {
-                "id": "deepseek-coder:6.7b",
-                "name": "Deepseek Coder 6.7B",
-                "pull_cmd": "ollama pull deepseek-coder:6.7b"
-            },
             {
                 "id": "qwen2.5-coder:7b",
                 "name": "Qwen 2.5 Coder 7B",
                 "pull_cmd": "ollama pull qwen2.5-coder:7b"
             },
             {
-                "id": "qwen2.5-coder:3b",
-                "name": "Qwen 2.5 Coder 3B",
-                "pull_cmd": "ollama pull qwen2.5-coder:3b"
+                "id": "llama3.1:8b",
+                "name": "Llama 3.1 8B",
+                "pull_cmd": "ollama pull llama3.1:8b"
             }
         ]
     },
@@ -31,27 +26,18 @@
             "test_framework": "pytest",
             "file_suffix": "_test.py",
             "display": "Python"
-        },
-        "java": {
-            "test_framework": "JUnit 5",
-            "file_suffix": "Test.java",
-            "display": "Java"
-        },
-        "csharp": {
-            "test_framework": "xUnit",
-            "file_suffix": "Tests.cs",
-            "display": "C#"
-        },
-        "javascript": {
-            "test_framework": "Jest",
-            "file_suffix": ".test.js",
-            "display": "JavaScript"
         }
     },
     "server": {
         "host": "0.0.0.0",
         "port": 7860,
-        "debug": true,
+        "debug": false,
         "share": false
+    },
+    "api": {
+        "host": "127.0.0.1",
+        "port": 8000,
+        "token": "",
+        "max_request_bytes": 2097152
     }
 }

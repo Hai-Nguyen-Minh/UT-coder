@@ -1,0 +1,242 @@
+[
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_01_order_total",
+    "category": "internal_models",
+    "target_file": "order_total.py",
+    "target_source": "from order_domain import Money, Order, OrderStatus\n\n\ndef payable_total(order: Order, tax_rate: float) -> Money:\n    if order.status is OrderStatus.CANCELLED:\n        raise ValueError(\"cancelled order\")\n    if tax_rate < 0:\n        raise ValueError(\"negative tax\")\n    subtotal = sum(line.unit_price.amount * line.quantity for line in order.lines)\n    currency = order.lines[0].unit_price.currency if order.lines else order.currency\n    if any(line.unit_price.currency != currency for line in order.lines):\n        raise ValueError(\"mixed currencies\")\n    return Money(round(subtotal * (1 + tax_rate), 2), currency)\n",
+    "project_files": {
+      "order_domain.py": "from dataclasses import dataclass, field\nfrom enum import Enum\n\n\nclass OrderStatus(Enum):\n    DRAFT = \"draft\"\n    CONFIRMED = \"confirmed\"\n    CANCELLED = \"cancelled\"\n\n\n@dataclass(frozen=True)\nclass Money:\n    amount: float\n    currency: str = \"USD\"\n\n\n@dataclass(frozen=True)\nclass OrderLine:\n    sku: str\n    quantity: int\n    unit_price: Money\n\n\n@dataclass\nclass Order:\n    number: str\n    status: OrderStatus\n    lines: list[OrderLine] = field(default_factory=list)\n    currency: str = \"USD\"\n"
+    },
+    "required_symbols": [{"file": "order_domain.py", "symbols": ["Money", "Order", "OrderLine", "OrderStatus"]}],
+    "reference_tests": "import pytest\nfrom order_domain import Money, Order, OrderLine, OrderStatus\nfrom order_total import payable_total\n\n\ndef test_total_and_empty_order():\n    order = Order(\"A-1\", OrderStatus.CONFIRMED, [OrderLine(\"x\", 2, Money(10)), OrderLine(\"y\", 1, Money(5))])\n    assert payable_total(order, 0.1) == Money(27.5, \"USD\")\n    assert payable_total(Order(\"A-2\", OrderStatus.DRAFT, [], \"EUR\"), 0) == Money(0, \"EUR\")\n\n\ndef test_invalid_orders():\n    with pytest.raises(ValueError, match=\"cancelled\"):\n        payable_total(Order(\"A-3\", OrderStatus.CANCELLED), 0.1)\n    mixed = Order(\"A-4\", OrderStatus.CONFIRMED, [OrderLine(\"x\", 1, Money(1, \"USD\")), OrderLine(\"y\", 1, Money(1, \"EUR\"))])\n    with pytest.raises(ValueError, match=\"mixed\"):\n        payable_total(mixed, 0)\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_02_invoice_summary",
+    "category": "internal_models",
+    "target_file": "invoice_pricing.py",
+    "target_source": "from billing_models import DiscountBand, Invoice, InvoiceSummary\n\n\ndef summarize_invoice(invoice: Invoice, band: DiscountBand) -> InvoiceSummary:\n    subtotal = sum(item.quantity * item.unit_price for item in invoice.items)\n    discount = subtotal * band.rate if subtotal >= band.minimum_subtotal else 0.0\n    taxable = sum(item.quantity * item.unit_price for item in invoice.items if item.taxable)\n    tax = taxable * invoice.tax_rate\n    return InvoiceSummary(round(subtotal, 2), round(discount, 2), round(tax, 2), round(subtotal - discount + tax, 2))\n",
+    "project_files": {
+      "billing_models.py": "from dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass InvoiceItem:\n    code: str\n    quantity: int\n    unit_price: float\n    taxable: bool = True\n\n\n@dataclass(frozen=True)\nclass Invoice:\n    customer_id: str\n    items: tuple[InvoiceItem, ...]\n    tax_rate: float = 0.1\n\n\n@dataclass(frozen=True)\nclass DiscountBand:\n    minimum_subtotal: float\n    rate: float\n\n\n@dataclass(frozen=True)\nclass InvoiceSummary:\n    subtotal: float\n    discount: float\n    tax: float\n    balance: float\n"
+    },
+    "required_symbols": [{"file": "billing_models.py", "symbols": ["InvoiceItem", "Invoice", "DiscountBand", "InvoiceSummary"]}],
+    "reference_tests": "from billing_models import DiscountBand, Invoice, InvoiceItem, InvoiceSummary\nfrom invoice_pricing import summarize_invoice\n\n\ndef test_discount_and_tax_contract():\n    invoice = Invoice(\"c1\", (InvoiceItem(\"a\", 2, 30), InvoiceItem(\"b\", 1, 50, False)), 0.1)\n    assert summarize_invoice(invoice, DiscountBand(100, 0.2)) == InvoiceSummary(110, 22, 6, 94)\n\n\ndef test_below_discount_threshold():\n    invoice = Invoice(\"c2\", (InvoiceItem(\"a\", 1, 20),), 0.05)\n    assert summarize_invoice(invoice, DiscountBand(100, 0.2)) == InvoiceSummary(20, 0, 1, 21)\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_03_permission_policy",
+    "category": "internal_models",
+    "target_file": "permission_policy.py",
+    "target_source": "from access_domain import Permission, User\n\n\ndef can_access(user: User, permission: Permission, owner_id: str | None = None) -> bool:\n    if user.suspended:\n        return False\n    if any(permission in role.grants for role in user.roles):\n        return True\n    return permission is Permission.EDIT_OWN and owner_id == user.user_id\n",
+    "project_files": {
+      "access_domain.py": "from dataclasses import dataclass\nfrom enum import Enum\n\n\nclass Permission(Enum):\n    READ = \"read\"\n    EDIT_ANY = \"edit:any\"\n    EDIT_OWN = \"edit:own\"\n\n\n@dataclass(frozen=True)\nclass Role:\n    name: str\n    grants: frozenset[Permission]\n\n\n@dataclass(frozen=True)\nclass User:\n    user_id: str\n    roles: tuple[Role, ...] = ()\n    suspended: bool = False\n"
+    },
+    "required_symbols": [{"file": "access_domain.py", "symbols": ["Permission", "Role", "User"]}],
+    "reference_tests": "from access_domain import Permission, Role, User\nfrom permission_policy import can_access\n\n\ndef test_role_and_owner_permissions():\n    reader = User(\"u1\", (Role(\"reader\", frozenset({Permission.READ})),))\n    assert can_access(reader, Permission.READ) is True\n    assert can_access(reader, Permission.EDIT_ANY) is False\n    assert can_access(reader, Permission.EDIT_OWN, \"u1\") is True\n    assert can_access(reader, Permission.EDIT_OWN, \"u2\") is False\n\n\ndef test_suspension_overrides_grant():\n    admin = User(\"u2\", (Role(\"admin\", frozenset({Permission.EDIT_ANY})),), True)\n    assert can_access(admin, Permission.EDIT_ANY) is False\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_04_tree_manifest",
+    "category": "internal_models",
+    "target_file": "tree_manifest.py",
+    "target_source": "from tree_domain import NodeKind, TreeNode\n\n\ndef build_manifest(root: TreeNode) -> list[str]:\n    result: list[str] = []\n\n    def visit(node: TreeNode, prefix: str) -> None:\n        path = f\"{prefix}/{node.name}\" if prefix else node.name\n        marker = \"/\" if node.kind is NodeKind.DIRECTORY else \"\"\n        result.append(path + marker)\n        for child in sorted(node.children, key=lambda item: item.name):\n            visit(child, path)\n\n    visit(root, \"\")\n    return result\n",
+    "project_files": {
+      "tree_domain.py": "from dataclasses import dataclass, field\nfrom enum import Enum\n\n\nclass NodeKind(Enum):\n    FILE = \"file\"\n    DIRECTORY = \"directory\"\n\n\n@dataclass\nclass TreeNode:\n    name: str\n    kind: NodeKind\n    children: list[\"TreeNode\"] = field(default_factory=list)\n\n    def add(self, child: \"TreeNode\") -> \"TreeNode\":\n        self.children.append(child)\n        return self\n"
+    },
+    "required_symbols": [{"file": "tree_domain.py", "symbols": ["NodeKind", "TreeNode"]}],
+    "reference_tests": "from tree_domain import NodeKind, TreeNode\nfrom tree_manifest import build_manifest\n\n\ndef test_nested_manifest_is_sorted():\n    root = TreeNode(\"root\", NodeKind.DIRECTORY)\n    src = TreeNode(\"src\", NodeKind.DIRECTORY).add(TreeNode(\"main.py\", NodeKind.FILE))\n    root.add(src).add(TreeNode(\"README.md\", NodeKind.FILE))\n    assert build_manifest(root) == [\"root/\", \"root/README.md\", \"root/src/\", \"root/src/main.py\"]\n\n\ndef test_file_root():\n    assert build_manifest(TreeNode(\"one.txt\", NodeKind.FILE)) == [\"one.txt\"]\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_05_user_lookup",
+    "category": "injected_dependencies",
+    "target_file": "user_lookup.py",
+    "target_source": "from user_ports import UserNotFound, UserRepository\n\n\ndef active_email(repository: UserRepository, user_id: str) -> str:\n    user = repository.get_by_id(user_id)\n    if user is None:\n        raise UserNotFound(user_id)\n    if not user.active:\n        raise ValueError(\"inactive user\")\n    return user.email.lower()\n",
+    "project_files": {
+      "user_ports.py": "from dataclasses import dataclass\nfrom typing import Protocol\n\n\n@dataclass(frozen=True)\nclass UserRecord:\n    identifier: str\n    email: str\n    active: bool = True\n\n\nclass UserNotFound(LookupError):\n    pass\n\n\nclass UserRepository(Protocol):\n    def get_by_id(self, identifier: str) -> UserRecord | None: ...\n"
+    },
+    "required_symbols": [{"file": "user_ports.py", "symbols": ["UserRecord", "UserNotFound", "UserRepository"]}],
+    "reference_tests": "import pytest\nfrom user_lookup import active_email\nfrom user_ports import UserNotFound, UserRecord\n\n\nclass Repo:\n    def __init__(self, value): self.value = value; self.calls = []\n    def get_by_id(self, identifier): self.calls.append(identifier); return self.value\n\n\ndef test_active_user_and_repository_contract():\n    repo = Repo(UserRecord(\"7\", \"Ada@Example.COM\"))\n    assert active_email(repo, \"7\") == \"ada@example.com\"\n    assert repo.calls == [\"7\"]\n\n\ndef test_missing_and_inactive_users():\n    with pytest.raises(UserNotFound): active_email(Repo(None), \"x\")\n    with pytest.raises(ValueError, match=\"inactive\"): active_email(Repo(UserRecord(\"8\", \"x@y\", False)), \"8\")\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_06_payment_gateway",
+    "category": "injected_dependencies",
+    "target_file": "payment_processor.py",
+    "target_source": "from payment_ports import PaymentDeclined, PaymentGateway, PaymentRequest, PaymentResult\n\n\ndef collect_payment(gateway: PaymentGateway, order_id: str, cents: int, token: str) -> PaymentResult:\n    if cents <= 0:\n        raise ValueError(\"amount must be positive\")\n    response = gateway.charge(PaymentRequest(order_id, cents, token))\n    if not response.approved:\n        raise PaymentDeclined(response.reason or \"declined\")\n    return PaymentResult(order_id, response.transaction_id, cents)\n",
+    "project_files": {
+      "payment_ports.py": "from dataclasses import dataclass\nfrom typing import Protocol\n\n\n@dataclass(frozen=True)\nclass PaymentRequest:\n    order_id: str\n    amount_cents: int\n    payment_token: str\n\n\n@dataclass(frozen=True)\nclass GatewayResponse:\n    approved: bool\n    transaction_id: str = \"\"\n    reason: str = \"\"\n\n\n@dataclass(frozen=True)\nclass PaymentResult:\n    order_id: str\n    transaction_id: str\n    charged_cents: int\n\n\nclass PaymentDeclined(RuntimeError):\n    pass\n\n\nclass PaymentGateway(Protocol):\n    def charge(self, request: PaymentRequest) -> GatewayResponse: ...\n"
+    },
+    "required_symbols": [{"file": "payment_ports.py", "symbols": ["PaymentRequest", "GatewayResponse", "PaymentResult", "PaymentDeclined", "PaymentGateway"]}],
+    "reference_tests": "import pytest\nfrom payment_ports import GatewayResponse, PaymentDeclined, PaymentRequest, PaymentResult\nfrom payment_processor import collect_payment\n\n\nclass Gateway:\n    def __init__(self, response): self.response = response; self.request = None\n    def charge(self, request): self.request = request; return self.response\n\n\ndef test_approved_charge_uses_request_contract():\n    gateway = Gateway(GatewayResponse(True, \"tx-9\"))\n    assert collect_payment(gateway, \"o-1\", 1250, \"tok\") == PaymentResult(\"o-1\", \"tx-9\", 1250)\n    assert gateway.request == PaymentRequest(\"o-1\", 1250, \"tok\")\n\n\ndef test_decline_and_invalid_amount():\n    with pytest.raises(PaymentDeclined, match=\"blocked\"): collect_payment(Gateway(GatewayResponse(False, reason=\"blocked\")), \"o\", 1, \"t\")\n    with pytest.raises(ValueError): collect_payment(Gateway(None), \"o\", 0, \"t\")\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_07_catalog_cache",
+    "category": "injected_dependencies",
+    "target_file": "catalog_service.py",
+    "target_source": "from catalog_ports import CachePort, Product, ProductRepository\n\n\nclass CatalogService:\n    def __init__(self, repository: ProductRepository, cache: CachePort) -> None:\n        self.repository = repository\n        self.cache = cache\n\n    def find(self, sku: str) -> Product | None:\n        cached = self.cache.read(f\"product:{sku}\")\n        if cached is not None:\n            return Product.from_mapping(cached)\n        product = self.repository.find_by_sku(sku)\n        if product is not None:\n            self.cache.write(f\"product:{sku}\", product.to_mapping(), ttl_seconds=60)\n        return product\n",
+    "project_files": {
+      "catalog_ports.py": "from dataclasses import dataclass\nfrom typing import Any, Protocol\n\n\n@dataclass(frozen=True)\nclass Product:\n    sku: str\n    title: str\n    price_cents: int\n\n    @classmethod\n    def from_mapping(cls, value: dict[str, Any]) -> \"Product\":\n        return cls(value[\"sku\"], value[\"title\"], int(value[\"price_cents\"]))\n\n    def to_mapping(self) -> dict[str, Any]:\n        return {\"sku\": self.sku, \"title\": self.title, \"price_cents\": self.price_cents}\n\n\nclass ProductRepository(Protocol):\n    def find_by_sku(self, sku: str) -> Product | None: ...\n\n\nclass CachePort(Protocol):\n    def read(self, key: str) -> dict[str, Any] | None: ...\n    def write(self, key: str, value: dict[str, Any], ttl_seconds: int) -> None: ...\n"
+    },
+    "required_symbols": [{"file": "catalog_ports.py", "symbols": ["Product", "ProductRepository", "CachePort"]}],
+    "reference_tests": "from catalog_ports import Product\nfrom catalog_service import CatalogService\n\n\nclass Repo:\n    def __init__(self, value): self.value = value; self.calls = []\n    def find_by_sku(self, sku): self.calls.append(sku); return self.value\n\n\nclass Cache:\n    def __init__(self, value=None): self.value = value; self.writes = []\n    def read(self, key): return self.value\n    def write(self, key, value, ttl_seconds): self.writes.append((key, value, ttl_seconds))\n\n\ndef test_cache_hit_skips_repository():\n    repo = Repo(None); cache = Cache({\"sku\": \"A\", \"title\": \"Apple\", \"price_cents\": \"99\"})\n    assert CatalogService(repo, cache).find(\"A\") == Product(\"A\", \"Apple\", 99)\n    assert repo.calls == []\n\n\ndef test_cache_miss_writes_product():\n    product = Product(\"B\", \"Book\", 500); repo = Repo(product); cache = Cache()\n    assert CatalogService(repo, cache).find(\"B\") == product\n    assert cache.writes == [(\"product:B\", product.to_mapping(), 60)]\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_08_notification_mail",
+    "category": "injected_dependencies",
+    "target_file": "notification_service.py",
+    "target_source": "from notification_ports import Delivery, MailClient, MailMessage, Recipient\n\n\ndef send_welcome(client: MailClient, recipient: Recipient) -> Delivery:\n    if not recipient.email or \"@\" not in recipient.email:\n        raise ValueError(\"invalid recipient\")\n    message = MailMessage(to=(recipient.email,), subject=\"Welcome\", text=f\"Hello {recipient.display_name}!\")\n    receipt = client.deliver(message)\n    return Delivery(recipient.identifier, receipt.message_id, receipt.accepted)\n",
+    "project_files": {
+      "notification_ports.py": "from dataclasses import dataclass\nfrom typing import Protocol\n\n\n@dataclass(frozen=True)\nclass Recipient:\n    identifier: str\n    email: str\n    display_name: str\n\n\n@dataclass(frozen=True)\nclass MailMessage:\n    to: tuple[str, ...]\n    subject: str\n    text: str\n\n\n@dataclass(frozen=True)\nclass MailReceipt:\n    message_id: str\n    accepted: bool\n\n\n@dataclass(frozen=True)\nclass Delivery:\n    recipient_id: str\n    external_id: str\n    accepted: bool\n\n\nclass MailClient(Protocol):\n    def deliver(self, message: MailMessage) -> MailReceipt: ...\n"
+    },
+    "required_symbols": [{"file": "notification_ports.py", "symbols": ["Recipient", "MailMessage", "MailReceipt", "Delivery", "MailClient"]}],
+    "reference_tests": "import pytest\nfrom notification_ports import Delivery, MailReceipt, Recipient\nfrom notification_service import send_welcome\n\n\nclass Client:\n    def __init__(self): self.message = None\n    def deliver(self, message): self.message = message; return MailReceipt(\"m-1\", True)\n\n\ndef test_message_contract_and_delivery():\n    client = Client(); recipient = Recipient(\"u1\", \"ada@example.com\", \"Ada\")\n    assert send_welcome(client, recipient) == Delivery(\"u1\", \"m-1\", True)\n    assert client.message.to == (\"ada@example.com\",)\n    assert client.message.text == \"Hello Ada!\"\n\n\ndef test_invalid_email_is_not_sent():\n    with pytest.raises(ValueError, match=\"invalid\"): send_welcome(Client(), Recipient(\"u\", \"bad\", \"Bad\"))\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_09_json_config",
+    "category": "file_and_config",
+    "target_file": "json_config_loader.py",
+    "target_source": "import json\nfrom pathlib import Path\n\nfrom app_config import AppConfig, DEFAULT_TIMEOUT_SECONDS, Environment\n\n\ndef load_config(path: str | Path) -> AppConfig:\n    data = json.loads(Path(path).read_text(encoding=\"utf-8\"))\n    endpoint = str(data[\"endpoint\"]).rstrip(\"/\")\n    if not endpoint.startswith((\"http://\", \"https://\")):\n        raise ValueError(\"invalid endpoint\")\n    return AppConfig(endpoint, Environment(data.get(\"environment\", \"dev\")), int(data.get(\"timeout_seconds\", DEFAULT_TIMEOUT_SECONDS)))\n",
+    "project_files": {
+      "app_config.py": "from dataclasses import dataclass\nfrom enum import Enum\n\n\nDEFAULT_TIMEOUT_SECONDS = 15\n\n\nclass Environment(Enum):\n    DEVELOPMENT = \"dev\"\n    STAGING = \"staging\"\n    PRODUCTION = \"production\"\n\n\n@dataclass(frozen=True)\nclass AppConfig:\n    endpoint: str\n    environment: Environment\n    timeout_seconds: int\n"
+    },
+    "required_symbols": [{"file": "app_config.py", "symbols": ["DEFAULT_TIMEOUT_SECONDS", "Environment", "AppConfig"]}],
+    "reference_tests": "import json\nimport pytest\nfrom app_config import AppConfig, Environment\nfrom json_config_loader import load_config\n\n\ndef test_loads_schema_and_defaults(tmp_path):\n    path = tmp_path / \"config.json\"; path.write_text(json.dumps({\"endpoint\": \"https://api.test/\"}), encoding=\"utf-8\")\n    assert load_config(path) == AppConfig(\"https://api.test\", Environment.DEVELOPMENT, 15)\n\n\ndef test_explicit_values_and_bad_endpoint(tmp_path):\n    path = tmp_path / \"config.json\"; path.write_text(json.dumps({\"endpoint\": \"http://local\", \"environment\": \"staging\", \"timeout_seconds\": \"8\"}), encoding=\"utf-8\")\n    assert load_config(path) == AppConfig(\"http://local\", Environment.STAGING, 8)\n    path.write_text(json.dumps({\"endpoint\": \"ftp://bad\"}), encoding=\"utf-8\")\n    with pytest.raises(ValueError): load_config(path)\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_10_csv_customers",
+    "category": "file_and_config",
+    "target_file": "customer_csv.py",
+    "target_source": "import csv\nfrom pathlib import Path\n\nfrom customer_schema import CustomerRecord, CustomerTier, REQUIRED_COLUMNS\n\n\ndef import_customers(path: str | Path) -> list[CustomerRecord]:\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        reader = csv.DictReader(handle)\n        if not REQUIRED_COLUMNS.issubset(reader.fieldnames or []):\n            raise ValueError(\"missing columns\")\n        return [CustomerRecord(row[\"customer_id\"], row[\"name\"].strip(), CustomerTier(row[\"tier\"].lower())) for row in reader]\n",
+    "project_files": {
+      "customer_schema.py": "from dataclasses import dataclass\nfrom enum import Enum\n\n\nREQUIRED_COLUMNS = frozenset({\"customer_id\", \"name\", \"tier\"})\n\n\nclass CustomerTier(Enum):\n    STANDARD = \"standard\"\n    PREMIUM = \"premium\"\n    ENTERPRISE = \"enterprise\"\n\n\n@dataclass(frozen=True)\nclass CustomerRecord:\n    customer_id: str\n    name: str\n    tier: CustomerTier\n"
+    },
+    "required_symbols": [{"file": "customer_schema.py", "symbols": ["REQUIRED_COLUMNS", "CustomerTier", "CustomerRecord"]}],
+    "reference_tests": "import pytest\nfrom customer_csv import import_customers\nfrom customer_schema import CustomerRecord, CustomerTier\n\n\ndef test_imports_custom_records(tmp_path):\n    path = tmp_path / \"customers.csv\"; path.write_text(\"customer_id,name,tier\\n1, Ada ,PREMIUM\\n2,Bob,standard\\n\", encoding=\"utf-8\")\n    assert import_customers(path) == [CustomerRecord(\"1\", \"Ada\", CustomerTier.PREMIUM), CustomerRecord(\"2\", \"Bob\", CustomerTier.STANDARD)]\n\n\ndef test_rejects_missing_schema(tmp_path):\n    path = tmp_path / \"bad.csv\"; path.write_text(\"customer_id,name\\n1,Ada\\n\", encoding=\"utf-8\")\n    with pytest.raises(ValueError, match=\"missing columns\"): import_customers(path)\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_11_report_export",
+    "category": "file_and_config",
+    "target_file": "report_exporter.py",
+    "target_source": "import csv\nfrom pathlib import Path\n\nfrom report_contracts import OutputPolicy, ReportRow\n\n\ndef export_report(rows: list[ReportRow], name: str, policy: OutputPolicy) -> Path:\n    destination = policy.destination_for(name, suffix=\".csv\")\n    destination.parent.mkdir(parents=True, exist_ok=True)\n    with destination.open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow(ReportRow.columns())\n        for row in rows:\n            writer.writerow(row.as_cells())\n    return destination\n",
+    "project_files": {
+      "report_contracts.py": "from dataclasses import dataclass\nfrom pathlib import Path\nfrom typing import Protocol\n\n\n@dataclass(frozen=True)\nclass ReportRow:\n    label: str\n    count: int\n    ratio: float\n\n    @staticmethod\n    def columns() -> tuple[str, str, str]:\n        return (\"label\", \"count\", \"ratio\")\n\n    def as_cells(self) -> tuple[str, str, str]:\n        return (self.label, str(self.count), f\"{self.ratio:.2f}\")\n\n\nclass OutputPolicy(Protocol):\n    def destination_for(self, name: str, suffix: str) -> Path: ...\n"
+    },
+    "required_symbols": [{"file": "report_contracts.py", "symbols": ["ReportRow", "OutputPolicy"]}],
+    "reference_tests": "from report_contracts import ReportRow\nfrom report_exporter import export_report\n\n\nclass Policy:\n    def __init__(self, root): self.root = root; self.calls = []\n    def destination_for(self, name, suffix): self.calls.append((name, suffix)); return self.root / \"nested\" / f\"{name}{suffix}\"\n\n\ndef test_exports_using_project_contract(tmp_path):\n    policy = Policy(tmp_path)\n    result = export_report([ReportRow(\"ok\", 3, 0.5)], \"daily\", policy)\n    assert result == tmp_path / \"nested\" / \"daily.csv\"\n    assert policy.calls == [(\"daily\", \".csv\")]\n    assert result.read_text(encoding=\"utf-8\").splitlines() == [\"label,count,ratio\", \"ok,3,0.50\"]\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_12_environment_settings",
+    "category": "file_and_config",
+    "target_file": "environment_settings.py",
+    "target_source": "from collections.abc import Mapping\n\nfrom deployment_contracts import DEFAULT_PORT, DeploymentSettings, LogLevel\n\n\ndef parse_environment(values: Mapping[str, str]) -> DeploymentSettings:\n    host = values.get(\"APP_HOST\", \"127.0.0.1\").strip()\n    port = int(values.get(\"APP_PORT\", str(DEFAULT_PORT)))\n    if not 1 <= port <= 65535:\n        raise ValueError(\"invalid port\")\n    debug = values.get(\"APP_DEBUG\", \"false\").lower() in {\"1\", \"true\", \"yes\"}\n    level = LogLevel(values.get(\"APP_LOG_LEVEL\", \"info\").lower())\n    return DeploymentSettings(host, port, debug, level)\n",
+    "project_files": {
+      "deployment_contracts.py": "from dataclasses import dataclass\nfrom enum import Enum\n\n\nDEFAULT_PORT = 8080\n\n\nclass LogLevel(Enum):\n    DEBUG = \"debug\"\n    INFO = \"info\"\n    WARNING = \"warning\"\n    ERROR = \"error\"\n\n\n@dataclass(frozen=True)\nclass DeploymentSettings:\n    host: str\n    port: int\n    debug: bool\n    log_level: LogLevel\n"
+    },
+    "required_symbols": [{"file": "deployment_contracts.py", "symbols": ["DEFAULT_PORT", "LogLevel", "DeploymentSettings"]}],
+    "reference_tests": "import pytest\nfrom deployment_contracts import DeploymentSettings, LogLevel\nfrom environment_settings import parse_environment\n\n\ndef test_defaults_and_explicit_environment():\n    assert parse_environment({}) == DeploymentSettings(\"127.0.0.1\", 8080, False, LogLevel.INFO)\n    assert parse_environment({\"APP_HOST\": \" api \" , \"APP_PORT\": \"9000\", \"APP_DEBUG\": \"YES\", \"APP_LOG_LEVEL\": \"WARNING\"}) == DeploymentSettings(\"api\", 9000, True, LogLevel.WARNING)\n\n\ndef test_invalid_port():\n    with pytest.raises(ValueError, match=\"invalid port\"): parse_environment({\"APP_PORT\": \"70000\"})\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_13_window_limiter",
+    "category": "stateful_components",
+    "target_file": "window_limiter.py",
+    "target_source": "from collections import defaultdict, deque\n\nfrom rate_contracts import Clock, RateLimitDecision, RateLimitPolicy\n\n\nclass WindowRateLimiter:\n    def __init__(self, policy: RateLimitPolicy, clock: Clock) -> None:\n        self.policy = policy\n        self.clock = clock\n        self._events: dict[str, deque[float]] = defaultdict(deque)\n\n    def check(self, key: str) -> RateLimitDecision:\n        now = self.clock.monotonic()\n        events = self._events[key]\n        cutoff = now - self.policy.window_seconds\n        while events and events[0] <= cutoff:\n            events.popleft()\n        if len(events) >= self.policy.max_requests:\n            return RateLimitDecision(False, 0, events[0] + self.policy.window_seconds)\n        events.append(now)\n        return RateLimitDecision(True, self.policy.max_requests - len(events), None)\n",
+    "project_files": {
+      "rate_contracts.py": "from dataclasses import dataclass\nfrom typing import Protocol\n\n\n@dataclass(frozen=True)\nclass RateLimitPolicy:\n    max_requests: int\n    window_seconds: float\n\n\n@dataclass(frozen=True)\nclass RateLimitDecision:\n    allowed: bool\n    remaining: int\n    retry_at: float | None\n\n\nclass Clock(Protocol):\n    def monotonic(self) -> float: ...\n"
+    },
+    "required_symbols": [{"file": "rate_contracts.py", "symbols": ["RateLimitPolicy", "RateLimitDecision", "Clock"]}],
+    "reference_tests": "from rate_contracts import RateLimitDecision, RateLimitPolicy\nfrom window_limiter import WindowRateLimiter\n\n\nclass Clock:\n    def __init__(self, now=10.0): self.now = now\n    def monotonic(self): return self.now\n\n\ndef test_state_and_window_expiration():\n    clock = Clock(); limiter = WindowRateLimiter(RateLimitPolicy(2, 5), clock)\n    assert limiter.check(\"u\") == RateLimitDecision(True, 1, None)\n    clock.now = 11; assert limiter.check(\"u\") == RateLimitDecision(True, 0, None)\n    clock.now = 12; assert limiter.check(\"u\") == RateLimitDecision(False, 0, 15.0)\n    clock.now = 15; assert limiter.check(\"u\") == RateLimitDecision(True, 0, None)\n\n\ndef test_keys_are_independent():\n    clock = Clock(); limiter = WindowRateLimiter(RateLimitPolicy(1, 10), clock)\n    assert limiter.check(\"a\").allowed and limiter.check(\"b\").allowed\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_14_expiring_cache",
+    "category": "stateful_components",
+    "target_file": "expiring_cache.py",
+    "target_source": "from typing import Generic, TypeVar\n\nfrom cache_contracts import CacheEntry, TimeProvider\n\n\nT = TypeVar(\"T\")\n\n\nclass ExpiringCache(Generic[T]):\n    def __init__(self, time_provider: TimeProvider) -> None:\n        self.time_provider = time_provider\n        self._values: dict[str, CacheEntry[T]] = {}\n\n    def put(self, key: str, value: T, ttl_seconds: float) -> None:\n        if ttl_seconds <= 0:\n            raise ValueError(\"ttl must be positive\")\n        self._values[key] = CacheEntry(value, self.time_provider.now() + ttl_seconds)\n\n    def get(self, key: str) -> T | None:\n        entry = self._values.get(key)\n        if entry is None:\n            return None\n        if entry.expires_at <= self.time_provider.now():\n            del self._values[key]\n            return None\n        return entry.value\n",
+    "project_files": {
+      "cache_contracts.py": "from dataclasses import dataclass\nfrom typing import Generic, Protocol, TypeVar\n\n\nT = TypeVar(\"T\")\n\n\n@dataclass(frozen=True)\nclass CacheEntry(Generic[T]):\n    value: T\n    expires_at: float\n\n\nclass TimeProvider(Protocol):\n    def now(self) -> float: ...\n"
+    },
+    "required_symbols": [{"file": "cache_contracts.py", "symbols": ["CacheEntry", "TimeProvider"]}],
+    "reference_tests": "import pytest\nfrom expiring_cache import ExpiringCache\n\n\nclass Time:\n    def __init__(self): self.value = 100.0\n    def now(self): return self.value\n\n\ndef test_put_get_and_expire():\n    time = Time(); cache = ExpiringCache(time)\n    assert cache.get(\"missing\") is None\n    cache.put(\"a\", {\"v\": 1}, 5); assert cache.get(\"a\") == {\"v\": 1}\n    time.value = 105; assert cache.get(\"a\") is None; assert \"a\" not in cache._values\n\n\ndef test_invalid_ttl():\n    with pytest.raises(ValueError, match=\"positive\"): ExpiringCache(Time()).put(\"a\", 1, 0)\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_15_inventory_reservation",
+    "category": "stateful_components",
+    "target_file": "inventory_service.py",
+    "target_source": "from inventory_domain import InsufficientStock, Reservation, StockItem\n\n\nclass InventoryService:\n    def __init__(self, items: list[StockItem]) -> None:\n        self._items = {item.sku: item for item in items}\n        self._reservations: dict[str, Reservation] = {}\n\n    def reserve(self, reservation_id: str, sku: str, quantity: int) -> Reservation:\n        if quantity <= 0:\n            raise ValueError(\"quantity must be positive\")\n        if reservation_id in self._reservations:\n            return self._reservations[reservation_id]\n        item = self._items.get(sku)\n        if item is None or item.available < quantity:\n            raise InsufficientStock(sku)\n        item.available -= quantity\n        reservation = Reservation(reservation_id, sku, quantity)\n        self._reservations[reservation_id] = reservation\n        return reservation\n\n    def release(self, reservation_id: str) -> bool:\n        reservation = self._reservations.pop(reservation_id, None)\n        if reservation is None:\n            return False\n        self._items[reservation.sku].available += reservation.quantity\n        return True\n",
+    "project_files": {
+      "inventory_domain.py": "from dataclasses import dataclass\n\n\n@dataclass\nclass StockItem:\n    sku: str\n    available: int\n\n\n@dataclass(frozen=True)\nclass Reservation:\n    reservation_id: str\n    sku: str\n    quantity: int\n\n\nclass InsufficientStock(RuntimeError):\n    pass\n"
+    },
+    "required_symbols": [{"file": "inventory_domain.py", "symbols": ["StockItem", "Reservation", "InsufficientStock"]}],
+    "reference_tests": "import pytest\nfrom inventory_domain import InsufficientStock, Reservation, StockItem\nfrom inventory_service import InventoryService\n\n\ndef test_reserve_is_idempotent_and_release_restores_stock():\n    item = StockItem(\"A\", 5); service = InventoryService([item])\n    expected = Reservation(\"r1\", \"A\", 3)\n    assert service.reserve(\"r1\", \"A\", 3) == expected\n    assert service.reserve(\"r1\", \"A\", 3) == expected and item.available == 2\n    assert service.release(\"r1\") is True and item.available == 5\n    assert service.release(\"r1\") is False\n\n\ndef test_invalid_and_insufficient_quantities():\n    service = InventoryService([StockItem(\"A\", 1)])\n    with pytest.raises(ValueError): service.reserve(\"r\", \"A\", 0)\n    with pytest.raises(InsufficientStock): service.reserve(\"r\", \"A\", 2)\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_16_event_dispatcher",
+    "category": "stateful_components",
+    "target_file": "event_dispatcher.py",
+    "target_source": "from collections import defaultdict\n\nfrom event_contracts import Event, EventListener\n\n\nclass EventDispatcher:\n    def __init__(self) -> None:\n        self._listeners: dict[str, list[EventListener]] = defaultdict(list)\n\n    def subscribe(self, event_name: str, listener: EventListener) -> None:\n        if listener not in self._listeners[event_name]:\n            self._listeners[event_name].append(listener)\n\n    def unsubscribe(self, event_name: str, listener: EventListener) -> bool:\n        try:\n            self._listeners[event_name].remove(listener)\n            return True\n        except ValueError:\n            return False\n\n    def dispatch(self, event: Event) -> int:\n        listeners = tuple(self._listeners[event.name])\n        for listener in listeners:\n            listener.handle(event)\n        return len(listeners)\n",
+    "project_files": {
+      "event_contracts.py": "from dataclasses import dataclass, field\nfrom typing import Any, Protocol\n\n\n@dataclass(frozen=True)\nclass Event:\n    name: str\n    payload: dict[str, Any] = field(default_factory=dict)\n\n\nclass EventListener(Protocol):\n    def handle(self, event: Event) -> None: ...\n"
+    },
+    "required_symbols": [{"file": "event_contracts.py", "symbols": ["Event", "EventListener"]}],
+    "reference_tests": "from event_contracts import Event\nfrom event_dispatcher import EventDispatcher\n\n\nclass Listener:\n    def __init__(self): self.events = []\n    def handle(self, event): self.events.append(event)\n\n\ndef test_subscribe_deduplicates_and_dispatches():\n    dispatcher = EventDispatcher(); listener = Listener(); event = Event(\"saved\", {\"id\": 1})\n    dispatcher.subscribe(\"saved\", listener); dispatcher.subscribe(\"saved\", listener)\n    assert dispatcher.dispatch(event) == 1 and listener.events == [event]\n\n\ndef test_unsubscribe_contract():\n    dispatcher = EventDispatcher(); listener = Listener(); dispatcher.subscribe(\"x\", listener)\n    assert dispatcher.unsubscribe(\"x\", listener) is True\n    assert dispatcher.unsubscribe(\"x\", listener) is False\n    assert dispatcher.dispatch(Event(\"x\")) == 0\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_17_async_directory",
+    "category": "advanced_python",
+    "target_file": "async_directory.py",
+    "target_source": "import asyncio\n\nfrom async_user_ports import AsyncUserRepository, UserRecord\n\n\nasync def active_display_names(repository: AsyncUserRepository, identifiers: list[str]) -> list[str]:\n    users = await asyncio.gather(*(repository.fetch(identifier) for identifier in identifiers))\n    return [user.display_name for user in users if user is not None and user.enabled]\n",
+    "project_files": {
+      "async_user_ports.py": "from dataclasses import dataclass\nfrom typing import Protocol\n\n\n@dataclass(frozen=True)\nclass UserRecord:\n    identifier: str\n    display_name: str\n    enabled: bool = True\n\n\nclass AsyncUserRepository(Protocol):\n    async def fetch(self, identifier: str) -> UserRecord | None: ...\n"
+    },
+    "required_symbols": [{"file": "async_user_ports.py", "symbols": ["UserRecord", "AsyncUserRepository"]}],
+    "reference_tests": "import asyncio\nfrom async_directory import active_display_names\nfrom async_user_ports import UserRecord\n\n\nclass Repo:\n    def __init__(self, values): self.values = values; self.calls = []\n    async def fetch(self, identifier): self.calls.append(identifier); await asyncio.sleep(0); return self.values.get(identifier)\n\n\ndef test_async_repository_contract():\n    repo = Repo({\"1\": UserRecord(\"1\", \"Ada\"), \"2\": UserRecord(\"2\", \"Bob\", False)})\n    assert asyncio.run(active_display_names(repo, [\"1\", \"2\", \"3\"])) == [\"Ada\"]\n    assert sorted(repo.calls) == [\"1\", \"2\", \"3\"]\n\n\ndef test_empty_batch():\n    assert asyncio.run(active_display_names(Repo({}), [])) == []\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_18_managed_query",
+    "category": "advanced_python",
+    "target_file": "managed_query.py",
+    "target_source": "from resource_contracts import QueryLease, ResourcePool\n\n\nclass ManagedQuery:\n    def __init__(self, pool: ResourcePool, statement: str) -> None:\n        self.pool = pool\n        self.statement = statement\n        self.lease: QueryLease | None = None\n\n    def __enter__(self) -> list[dict[str, object]]:\n        self.lease = self.pool.acquire()\n        return self.lease.connection.query(self.statement)\n\n    def __exit__(self, exc_type, exc, traceback) -> bool:\n        assert self.lease is not None\n        self.pool.release(self.lease, broken=exc is not None)\n        return False\n",
+    "project_files": {
+      "resource_contracts.py": "from dataclasses import dataclass\nfrom typing import Any, Protocol\n\n\nclass QueryConnection(Protocol):\n    def query(self, statement: str) -> list[dict[str, Any]]: ...\n\n\n@dataclass(frozen=True)\nclass QueryLease:\n    lease_id: str\n    connection: QueryConnection\n\n\nclass ResourcePool(Protocol):\n    def acquire(self) -> QueryLease: ...\n    def release(self, lease: QueryLease, broken: bool) -> None: ...\n"
+    },
+    "required_symbols": [{"file": "resource_contracts.py", "symbols": ["QueryConnection", "QueryLease", "ResourcePool"]}],
+    "reference_tests": "import pytest\nfrom managed_query import ManagedQuery\nfrom resource_contracts import QueryLease\n\n\nclass Connection:\n    def __init__(self, rows): self.rows = rows; self.statements = []\n    def query(self, statement): self.statements.append(statement); return self.rows\n\n\nclass Pool:\n    def __init__(self, connection): self.lease = QueryLease(\"l1\", connection); self.releases = []\n    def acquire(self): return self.lease\n    def release(self, lease, broken): self.releases.append((lease, broken))\n\n\ndef test_context_manager_success():\n    connection = Connection([{\"id\": 1}]); pool = Pool(connection)\n    with ManagedQuery(pool, \"select 1\") as rows: assert rows == [{\"id\": 1}]\n    assert connection.statements == [\"select 1\"] and pool.releases == [(pool.lease, False)]\n\n\ndef test_context_manager_marks_broken_and_propagates():\n    pool = Pool(Connection([]))\n    with pytest.raises(RuntimeError):\n        with ManagedQuery(pool, \"select\"): raise RuntimeError(\"boom\")\n    assert pool.releases == [(pool.lease, True)]\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_19_log_generator",
+    "category": "advanced_python",
+    "target_file": "log_generator.py",
+    "target_source": "from collections.abc import Iterable, Iterator\n\nfrom log_contracts import LogEntry, Severity\n\n\ndef iter_alerts(entries: Iterable[LogEntry], minimum: Severity = Severity.ERROR) -> Iterator[str]:\n    for entry in entries:\n        if entry.severity.rank >= minimum.rank:\n            yield f\"[{entry.severity.value}] {entry.message}\"\n",
+    "project_files": {
+      "log_contracts.py": "from dataclasses import dataclass\nfrom enum import Enum\n\n\nclass Severity(Enum):\n    DEBUG = (\"DEBUG\", 10)\n    INFO = (\"INFO\", 20)\n    WARNING = (\"WARN\", 30)\n    ERROR = (\"ERROR\", 40)\n    CRITICAL = (\"CRITICAL\", 50)\n\n    def __init__(self, label: str, rank: int) -> None:\n        self._value_ = label\n        self.rank = rank\n\n\n@dataclass(frozen=True)\nclass LogEntry:\n    severity: Severity\n    message: str\n"
+    },
+    "required_symbols": [{"file": "log_contracts.py", "symbols": ["Severity", "LogEntry"]}],
+    "reference_tests": "from log_contracts import LogEntry, Severity\nfrom log_generator import iter_alerts\n\n\ndef test_default_and_custom_thresholds():\n    entries = [LogEntry(Severity.INFO, \"ready\"), LogEntry(Severity.ERROR, \"bad\"), LogEntry(Severity.CRITICAL, \"down\")]\n    assert list(iter_alerts(entries)) == [\"[ERROR] bad\", \"[CRITICAL] down\"]\n    assert list(iter_alerts(entries, Severity.WARNING)) == [\"[ERROR] bad\", \"[CRITICAL] down\"]\n\n\ndef test_is_lazy_generator():\n    seen = []\n    def source():\n        seen.append(1); yield LogEntry(Severity.ERROR, \"one\")\n        seen.append(2); yield LogEntry(Severity.ERROR, \"two\")\n    result = iter_alerts(source()); assert seen == []\n    assert next(result) == \"[ERROR] one\" and seen == [1]\n"
+  },
+  {
+    "schema_version": 1,
+    "task_id": "rag_ctx_20_retry_policy",
+    "category": "advanced_python",
+    "target_file": "retry_executor.py",
+    "target_source": "from collections.abc import Callable\nfrom typing import TypeVar\n\nfrom retry_contracts import RetryExhausted, RetryPolicy, Sleeper\n\n\nT = TypeVar(\"T\")\n\n\ndef execute_with_retry(operation: Callable[[], T], policy: RetryPolicy, sleeper: Sleeper) -> T:\n    last_error: Exception | None = None\n    for attempt in range(1, policy.max_attempts + 1):\n        try:\n            return operation()\n        except policy.retryable_exceptions as error:\n            last_error = error\n            if attempt < policy.max_attempts:\n                sleeper.sleep(policy.delay_for(attempt))\n    raise RetryExhausted(policy.max_attempts, last_error)\n",
+    "project_files": {
+      "retry_contracts.py": "from dataclasses import dataclass\nfrom typing import Protocol\n\n\n@dataclass(frozen=True)\nclass RetryPolicy:\n    max_attempts: int\n    base_delay_seconds: float\n    retryable_exceptions: tuple[type[Exception], ...] = (RuntimeError,)\n\n    def delay_for(self, failed_attempt: int) -> float:\n        return self.base_delay_seconds * (2 ** (failed_attempt - 1))\n\n\nclass Sleeper(Protocol):\n    def sleep(self, seconds: float) -> None: ...\n\n\nclass RetryExhausted(RuntimeError):\n    def __init__(self, attempts: int, last_error: Exception | None) -> None:\n        super().__init__(f\"operation failed after {attempts} attempts\")\n        self.attempts = attempts\n        self.last_error = last_error\n"
+    },
+    "required_symbols": [{"file": "retry_contracts.py", "symbols": ["RetryPolicy", "Sleeper", "RetryExhausted"]}],
+    "reference_tests": "import pytest\nfrom retry_contracts import RetryExhausted, RetryPolicy\nfrom retry_executor import execute_with_retry\n\n\nclass Sleeper:\n    def __init__(self): self.delays = []\n    def sleep(self, seconds): self.delays.append(seconds)\n\n\ndef test_retries_with_policy_backoff():\n    calls = []\n    def operation():\n        calls.append(1)\n        if len(calls) < 3: raise RuntimeError(\"temporary\")\n        return \"ok\"\n    sleeper = Sleeper()\n    assert execute_with_retry(operation, RetryPolicy(3, 0.5), sleeper) == \"ok\"\n    assert sleeper.delays == [0.5, 1.0]\n\n\ndef test_non_retryable_propagates_and_exhaustion_wraps():\n    with pytest.raises(ValueError): execute_with_retry(lambda: (_ for _ in ()).throw(ValueError(\"bad\")), RetryPolicy(2, 1), Sleeper())\n    with pytest.raises(RetryExhausted) as caught:\n        execute_with_retry(lambda: (_ for _ in ()).throw(RuntimeError(\"bad\")), RetryPolicy(2, 1), Sleeper())\n    assert caught.value.attempts == 2 and isinstance(caught.value.last_error, RuntimeError)\n"
+  }
+]

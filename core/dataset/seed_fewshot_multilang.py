@@ -169,12 +169,42 @@ namespace Example.Tests
 }
 '''
     }
+    ,
+    # PYTHON
+    {
+        "language": "python",
+        "title": "Python Math utility with Pytest",
+        "source": '''\
+def add(a, b):
+    return a + b
+
+def divide(a, b):
+    if b == 0:
+        raise ValueError("Cannot divide by zero")
+    return a / b
+''',
+        "test": '''\
+import pytest
+from module_under_test import add, divide
+
+def test_add():
+    assert add(2, 3) == 5
+    assert add(-2, 5) == 3
+
+def test_divide():
+    assert divide(10, 2) == 5.0
+
+def test_divide_by_zero():
+    with pytest.raises(ValueError, match="Cannot divide by zero"):
+        divide(10, 0)
+'''
+    }
 ]
 
 def main():
     print("Loading embedding model...")
     embeddings = OllamaEmbeddings(
-        base_url="http://ollama:11434",
+        base_url="http://localhost:11434",
         model="nomic-embed-text"
     )
 

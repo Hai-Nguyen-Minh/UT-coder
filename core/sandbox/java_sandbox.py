@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import csv
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from .base import Sandbox, SandboxResult
 
@@ -92,7 +92,13 @@ POM_TEMPLATE = """<project xmlns="http://maven.apache.org/POM/4.0.0"
 class JavaSandbox(Sandbox):
     """Execution sandbox for Java using Maven, JaCoCo, and PIT."""
 
-    def run_test(self, file_name: str, source_code: str, test_code: str) -> SandboxResult:
+    def run_test(
+        self,
+        file_name: str,
+        source_code: str,
+        test_code: str,
+        project_files: Mapping[str, str] | None = None,
+    ) -> SandboxResult:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             
@@ -165,35 +171,10 @@ class JavaSandbox(Sandbox):
                             coverage_val = 0.0
                 except Exception as e:
                     logger.warning(f"Failed to parse JaCoCo CSV: {e}")
-                    
-            # 5. Run PIT for Mutation Testing
-            logger.info("Running maven pitest...")
-            pit_process = subprocess.run(
-                ["mvn", "-B", "pitest:mutationCoverage"],
-                cwd=temp_dir,
-                capture_output=True,
-                text=True
-            )
-            
-            mut_stdout = pit_process.stdout
-            mutation_score = self._extract_mutation_score(mut_stdout)
-            
             return SandboxResult(
                 success=True,
-                stdout=stdout + "\n" + mut_stdout,
-                stderr=stderr + "\n" + pit_process.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 error_log="",
-                coverage=coverage_val,
-                mutation_score=mutation_score
+                coverage=coverage_val
             )
-            
-    def _extract_mutation_score(self, pit_output: str) -> Optional[float]:
-        """Parse PIT output to calculate mutation score."""
-        # PIT output: ">> Generated 10 mutations Killed 8 (80%)"
-        match = re.search(r"Generated\s+\d+\s+mutations\s+Killed\s+\d+\s+\((\d+)%\)", pit_output)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                return None
-        return None

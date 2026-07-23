@@ -5,7 +5,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from .base import Sandbox, SandboxResult
 
@@ -14,7 +14,13 @@ logger = logging.getLogger(__name__)
 class CSharpSandbox(Sandbox):
     """Execution sandbox for C# (.NET) using xUnit, coverlet, and Stryker.NET."""
 
-    def run_test(self, file_name: str, source_code: str, test_code: str) -> SandboxResult:
+    def run_test(
+        self,
+        file_name: str,
+        source_code: str,
+        test_code: str,
+        project_files: Mapping[str, str] | None = None,
+    ) -> SandboxResult:
         # In .NET, it's easiest to create a fresh xunit project
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -97,36 +103,10 @@ class CSharpSandbox(Sandbox):
                         coverage_val = 0.0
                 except Exception as e:
                     logger.warning(f"Failed to parse coverlet coverage.json: {e}")
-                    
-            # 6. Run Stryker for Mutation Testing
-            logger.info("Running dotnet-stryker...")
-            stryker_cmd = ["dotnet-stryker"]
-            stryker_process = subprocess.run(
-                stryker_cmd,
-                cwd=temp_dir,
-                capture_output=True,
-                text=True
-            )
-            
-            mut_stdout = stryker_process.stdout
-            mutation_score = self._extract_mutation_score(mut_stdout)
-            
             return SandboxResult(
                 success=True,
-                stdout=stdout + "\n" + mut_stdout,
-                stderr=stderr + "\n" + stryker_process.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 error_log="",
-                coverage=coverage_val,
-                mutation_score=mutation_score
+                coverage=coverage_val
             )
-            
-    def _extract_mutation_score(self, stryker_output: str) -> Optional[float]:
-        """Parse stryker output to calculate mutation score."""
-        # Stryker usually outputs something like "Mutation score: 85.71%"
-        match = re.search(r"Mutation score:\s*([0-9.]+)\s*%", stryker_output, re.IGNORECASE)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                return None
-        return None

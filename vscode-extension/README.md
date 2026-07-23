@@ -1,122 +1,116 @@
-# UTcoder — AI Unit Test Generator for VS Code
+# UTcoder — Python Unit Test Generator for VS Code
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue)](https://marketplace.visualstudio.com/items?itemName=utcoder.utcoder-vscode)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+Extension này gửi file Python tới REST API của UTcoder và chỉ tạo file test khi server đã xác nhận:
 
-**UTcoder** is a minimal VS Code extension that generates unit tests with one right-click.
+- source và test compile được;
+- pytest pass;
+- báo cáo coverage hợp lệ;
+- line coverage đạt cổng generation hiện tại (mặc định 80%).
 
-Simply **right-click any source file** in the Explorer or Editor, and UTcoder sends the file to a remote UTcoder server which returns a complete unit test file. No compilation, no coverage, no runners — just test generation.
+Java, C#, JavaScript và TypeScript chưa được hỗ trợ chính thức.
 
-Supports **Python**, **Java**, **C#**, **JavaScript**, and **TypeScript**.
+## Luồng hoạt động
 
----
-
-## How It Works
-
-```
-1. Right-click a source file → "UTcoder: Generate Unit Tests"
-2. Extension reads file content
-3. Sends it via HTTP POST to the UTcoder server API
-4. Server generates unit tests using AI (RAG + LLM)
-5. Test file is created alongside your source file
-6. Test file opens automatically in a split editor
+```text
+Right-click file .py
+    → GET /api/health
+    → POST /api/generate
+    → RAG + Ollama + sandbox + self-reflection trên server
+    → nhận test đã accepted
+    → tạo test_<tên_file>.py
 ```
 
-## Quick Start
+Extension không tự chạy pytest trên máy VS Code. Việc kiểm chứng diễn ra trong sandbox của server.
 
-**Step 1:** Make sure your UTcoder server is running:
+## Chạy API trên server
+
+Với Docker Compose:
 
 ```bash
-# In the UTcoder project root:
-python main.py
+docker compose up -d utcoder utcoder-api
+docker compose exec utcoder python -m core.sandbox.preflight
 ```
 
-This starts the server on `http://localhost:8000`.
+API hybrid mặc định chỉ listen tại `127.0.0.1:8000` trên server. Từ máy đang chạy VS Code, mở SSH local-forward:
 
-**Step 2:** Right-click any source file in VS Code and select **"UTcoder: Generate Unit Tests"**.
+```bash
+ssh -N -L 8000:127.0.0.1:8000 <user>@<server-ip>
+```
 
-**Step 3:** The test file is created and opens beside your source.
+Sau đó giữ setting `utcoder.serverUrl` là `http://localhost:8000`. Cách này mã hóa source qua SSH và không cần public cổng API.
 
----
+Nếu chạy trực tiếp để phát triển:
 
-## Installation
+```bash
+python server.py
+```
+
+## Cài extension
 
 ```bash
 cd vscode-extension
-npm install
+npm ci
 npm run compile
 npx @vscode/vsce package --out utcoder-vscode.vsix
 code --install-extension utcoder-vscode.vsix
 ```
 
-## Commands
+## Sử dụng
 
-| Command | Keybinding | Description |
-|---------|-----------|-------------|
-| `UTcoder: Generate Unit Tests` | `Ctrl+Alt+G` / `Cmd+Alt+G` | Generate tests for current file |
-| `UTcoder: Check Server Health` | — | Check if the UTcoder server is reachable |
+- Chuột phải file `.py` → **UTcoder: Generate Unit Tests**.
+- Command Palette → `UTcoder: Generate Unit Tests`.
+- Phím tắt `Ctrl+Alt+G` (`Cmd+Alt+G` trên macOS).
+- `UTcoder: Check Server Health` để kiểm tra Ollama, ChromaDB và dependency sandbox.
 
-Access via:
-- **Right-click** in editor or Explorer
-- **Command Palette** (`Ctrl+Shift+P`) → type "UTcoder"
-- **Keyboard shortcut** `Ctrl+Alt+G`
+Extension từ chối ghi file nếu candidate không qua pytest và cổng coverage. Khi thành công, thông báo hiển thị coverage server đã đo.
 
-## Configuration
+## Cấu hình
 
-Open VS Code Settings (`Ctrl+,`) and search for `utcoder`:
+| Setting | Mặc định | Ý nghĩa |
+|---|---|---|
+| `utcoder.serverUrl` | `http://localhost:8000` | REST API URL |
+| `utcoder.serverTimeout` | `120000` | Timeout request tính bằng mili-giây |
+Bearer token không được lưu trong `settings.json`. Chạy command **UTcoder: Set API Token** để lưu token khớp `UTCODER_API_TOKEN` bằng VS Code SecretStorage; nhập rỗng để xóa.
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `utcoder.serverUrl` | `http://localhost:8000` | URL of the UTcoder HTTP server |
-| `utcoder.serverTimeout` | `120000` | Timeout in ms for server requests |
+Nếu API được đưa ra ngoài loopback/LAN tin cậy, phải dùng HTTPS và token. SSH local-forward là cấu hình được khuyến nghị.
 
-## Server API
-
-The extension expects the UTcoder server to expose these endpoints:
+## API contract
 
 ### `GET /api/health`
-Returns server status:
-```json
-{ "ready": true, "message": "Model: ...", "version": "0.1.0" }
-```
+
+Trả trạng thái thực của Ollama, configured model, ChromaDB path và Python sandbox dependencies.
 
 ### `POST /api/generate`
-Request body:
+
+Request:
+
 ```json
 {
   "file_name": "calculator.py",
-  "source_code": "def add(a, b): ...",
+  "source_code": "def add(a, b): return a + b",
   "language": "python"
 }
 ```
-Response:
+
+Response thành công:
+
 ```json
 {
   "success": true,
-  "code": "# Generated test code..."
+  "accepted": true,
+  "code": "import pytest\nfrom calculator import add\n...",
+  "test_file_name": "test_calculator.py",
+  "coverage": 100.0,
+  "execution_status": "tests_passed"
 }
 ```
 
-## Development
+## Giới hạn
 
-```bash
-cd vscode-extension
-npm install
-npm run compile   # TypeScript → JavaScript
-npm run watch     # Auto-compile on changes
-```
-
-## Project Structure
-
-```
-vscode-extension/
-├── src/
-│   └── extension.ts    # Single-file extension (no other modules)
-├── out/
-│   └── extension.js    # Compiled output
-├── package.json        # Extension manifest
-└── tsconfig.json       # TypeScript config
-```
+- Mỗi API process chỉ nhận một generation request tại một thời điểm để phù hợp Ollama local.
+- File quá giới hạn `UTCODER_API_MAX_REQUEST_BYTES` bị từ chối.
+- API không phải OpenAI-compatible API và không có `/v1/chat/completions`.
+- Test được tạo theo module basename; project có layout import đặc biệt có thể cần chỉnh import sau khi tạo.
 
 ## License
 

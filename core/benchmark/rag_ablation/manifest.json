@@ -1,0 +1,19 @@
+{
+  "ablation_schema_version": "1.0",
+  "evaluator_schema_version": "2.0",
+  "evaluator_version": "2.0.0",
+  "model": "qwen2.5-coder:7b",
+  "temperature": 0.1,
+  "max_retries": 3,
+  "minimum_line_coverage": 80.0,
+  "project_context_k": 4,
+  "fewshot_candidate_k": 4,
+  "conditions": [
+    "RAG_OFF",
+    "RAG_ON"
+  ],
+  "dataset_sha256": "97ad4014da670a3b98dc7008ad9865f0cb6eb9fa3fd9473ddddfda01bc119f4e",
+  "generator_sha256": "c574fca2aa6f199d50922d92f627667684b7cbdc412d856014fe6123fcf89f6b",
+  "evaluator_sha256": "2a013834f9d74056e26f4d5dca5bfcf2621d64c037a9d6ff3f625926b8c712a9",
+  "created_at_utc": "2026-07-22T19:01:32.654143+00:00"
+}

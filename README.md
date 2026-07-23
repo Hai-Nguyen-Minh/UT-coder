@@ -1,566 +1,342 @@
 # 🧪 UTcoder — AI-Powered Unit Test Generator
 
-**Local. Private. Offline.** UTcoder is an AI system that generates production-quality unit tests from source code using Ollama-powered LLMs, RAG over ChromaDB, and LoRA fine-tuning — all running entirely on your machine with zero data leaving it.
+**Local. Private. Offline.** UTcoder là hệ thống sinh unit test Python tự động từ source code bằng cách kết hợp **LLM** (local qua Ollama), **RAG** (Retrieval-Augmented Generation với ChromaDB) và **Real Sandbox Execution**. Phạm vi sản phẩm hiện tại được chốt là **Python-only**. Những file runner/cấu hình Java, C# và JavaScript còn trong repository chỉ là prototype cũ và định hướng tương lai, chưa phải tính năng được hỗ trợ chính thức.
 
-> **TL;DR:** Upload source code → AI generates tests + checks syntax + estimates coverage. Works offline. Fine-tunable on consumer GPUs.
+Phiên bản hiện tại giữ nguyên nền tảng đó nhưng bổ sung lớp kiểm chứng thực thi: test được chạy trong sandbox, đo coverage thật, self-reflection theo log lỗi và đánh giá chất lượng bằng mutation testing. Trọng tâm benchmark hiện tại là Python với hai mô hình local:
+- `qwen2.5-coder:7b`
+- `llama3.1:8b`
+
+Khác với các công cụ AI gen code thông thường, UTcoder **không coi câu trả lời của LLM là kết quả cuối**. Mọi unit test Python được sinh ra đều phải trải qua một vòng lặp: **Biên dịch → Chạy thật → Đo Coverage → LLM Tự sửa lỗi (Reflection) → Đánh giá bằng Mutation Testing**.
 
 ---
 
-## 🚀 Quick Start
+## 🌟 Tính năng Nổi bật (Key Features)
+
+1. **Private & Local**: Mã nguồn không bao giờ bị gửi lên cloud. Mọi thứ chạy trên máy chủ nội bộ hoặc máy cá nhân của bạn. Dữ liệu không đi ra dịch vụ AI bên thứ ba.
+2. **Context-Aware (RAG)**: Sử dụng ChromaDB để tự động tìm kiếm các đoạn code liên quan và các mẫu test chuẩn (few-shot) để đưa vào ngữ cảnh cho AI.
+3. **Execution & Self-Reflection**: Test sinh ra được ném vào Sandbox chạy thử (`pytest`). Nếu có lỗi, AI sẽ đọc Log lỗi để tự sửa chữa (Targeted Reflection).
+4. **Advanced Python Test Evaluator**: Test không chỉ cần "pass", mà còn bị thử thách bởi **Mutation Testing** (`mutmut`), đo **Branch Coverage**, và kiểm tra độ ổn định (**Flakiness check**).
+
+---
+
+## 🏗️ Kiến Trúc Hệ Thống (System Architecture)
+
+UTcoder được thiết kế theo mô hình **Hybrid Deployment**: Tách biệt phần AI nặng nề (chạy trên máy có GPU) và phần lõi nghiệp vụ/Giao diện (chạy trên Server Ubuntu).
+
+```text
+┌────────────────────────────── INTERFACE LAYER ──────────────────────────────┐
+│                                                                             │
+│  ┌──────────────────┐      ┌────────────────────┐      ┌─────────────────┐  │
+│  │ Gradio Web UI    │      │ VS Code Extension  │      │ REST/CLI        │  │
+│  │ upload/download  │      │ right-click source │      │ automation      │  │
+│  └────────┬─────────┘      └──────────┬─────────┘      └───────┬─────────┘  │
+│           └───────────────────────────┼─────────────────────────┘           │
+│                                       ▼                                     │
+│                              server.py / main.py                            │
+└───────────────────────────────────────┬─────────────────────────────────────┘
+                                        │
+┌────────────────────────────── SERVER UBUNTU ────────────────────────────────┐
+│                                       ▼                                     │
+│  ┌──────────────────────── generator.py ─────────────────────────────────┐  │
+│  │ code_parser.py → source_analyzer.py → RAG retrieval                   │  │
+│  │       │                  │                 │                          │  │
+│  │       │                  ├─ behavioral probing                        │  │
+│  │       │                  └─ code generation/mocking route             │  │
+│  │       │                                    │                          │  │
+│  │       └────────────────────────────────────┼─► prompt + reflection    │  │
+│  └────────────────────────────────────────────┼──────────────────────────┘  │
+│                                               │                             │
+│  ChromaDB ◄── valid_dataset.json              │ reverse SSH                 │
+│     ▲          → quality gate                 │ localhost:11434             │
+│     └──────────→ nomic-embed-text ────────────┼───────────────┐             │
+│                                               │               │             │
+│  ast_patcher.py ◄── sandbox pytest/coverage ◄─┘               │             │
+│                         │                                     │             │
+│                         └─ benchmark evaluator + mutmut       │             │
+└───────────────────────────────────────────────────────────────┼─────────────┘
+                                                                │
+┌──────────────────────────── MÁY LOCAL CÓ GPU ─────────────────▼─────────────┐
+│ Ollama: qwen2.5-coder:7b, llama3.1:8b, nomic-embed-text                     │
+│ Chỉ chạy model inference/embedding; không chạy sandbox hoặc ChromaDB        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+> **Giải thích**: Máy local (của Dev) chỉ chịu tải chạy Ollama. Source code, Vector Database, Sandbox, và Web UI nằm toàn bộ trên Server Ubuntu. Hai bên kết nối bảo mật qua Reverse SSH tunnel (`localhost:11434`), không cần mở port Ollama ra ngoài Internet.
+
+---
+
+## 🔄 Luồng Xử Lý Chi Tiết (Pipeline Deep-Dive)
+
+Đây là hành trình từ lúc upload source file cho đến khi nhận được test đã kiểm chứng:
+
+```text
+Người dùng upload/chọn source file
+        │
+        ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 1. PYTHON SOURCE DETECTION & PARSING                                       │
+│    xác nhận file .py → parse_code() → Python-aware chunks                  │
+└─────────────────────────────────────┬──────────────────────────────────────┘
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 2. SOURCE ANALYSIS & STRATEGY ROUTING                                      │
+│    AST/source contract                                                     │
+│      ├─ hàm thuần, kiểu JSON cơ bản → behavioral probing                   │
+│      └─ OOP/dependency/I/O phức tạp → code generation + mocks              │
+└─────────────────────────────────────┬──────────────────────────────────────┘
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 3. EMBEDDING & RAG RETRIEVAL                                               │
+│    source query → nomic-embed-text → ChromaDB similarity search            │
+│    lấy code chunks + few-shot tests đã qua quality gate                    │
+└─────────────────────────────────────┬──────────────────────────────────────┘
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 4. PROMPT CONSTRUCTION / BEHAVIORAL PLAN                                   │
+│    source + framework rules + RAG context + strategy-specific schema       │
+└─────────────────────────────────────┬──────────────────────────────────────┘
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 5. LOCAL LLM INFERENCE                                                     │
+│    server → reverse SSH → Ollama local                                     │
+│    qwen2.5-coder:7b hoặc llama3.1:8b, temperature=0.1                      │
+└─────────────────────────────────────┬──────────────────────────────────────┘
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 6. NORMALIZATION & REAL SANDBOX                                            │
+│    clean markdown/prose → normalize imports/module → arity validation      │
+│    compile → pytest → Coverage.py                                          │
+└─────────────────────────────────────┬──────────────────────────────────────┘
+                                      ▼
+                      ┌──────────── test/coverage đạt? ────────────┐
+                      │ Không                                      │ Có
+                      ▼                                            ▼
+┌──────────────────────────────────────────────┐   ┌─────────────────────────┐
+│ 7. TARGETED SELF-REFLECTION                  │   │ 8. FINAL CANDIDATE      │
+│    error log/missing lines → LLM repair      │   │ giữ candidate tốt nhất  │
+│    AST patch Class::method / expansion       │   │ trả file + coverage UI  │
+│    fast retry cho missing relative directory │   └─────────────┬───────────┘
+└───────────────────────┬──────────────────────┘                 │
+                        └───────── quay lại sandbox ─────────────┘
+                                                                 │
+                                                                 ▼
+                                        Benchmark: 3× stability → branch
+                                        coverage → mutmut → final score
+```
+
+### Điểm nhấn Công nghệ:
+- **Behavioral Probing & Fast Retry**: Chuyên trị lỗi "đoán mò" (Oracle problem) của AI cỡ nhỏ. Thay vì bắt AI tự viết toàn bộ đoạn code `pytest` và tự đoán kết quả Output, hệ thống chia việc:
+  - **AI đóng vai trò "Người lên kịch bản":** Chỉ đề xuất các Input cần test (VD: chuỗi rỗng, mảng âm...).
+  - **Server đóng vai trò "Thợ gõ code":** Lấy các Input đó chạy thử trên Sandbox để xem hàm trả về kết quả gì, sau đó Server sẽ tự động gen ra đoạn code `pytest` cuối cùng dựa trên kết quả chạy thật.
+  - *(Lưu ý: Chỉ áp dụng cho Hàm thuần. Với code OOP hay có kết nối Database, hệ thống sẽ tự chuyển về chiến lược bắt AI viết toàn bộ code kiểu truyền thống).*
+  - Nếu thiếu thư mục tương đối lúc chạy thử, sandbox sẽ tự tạo thư mục an toàn và thử lại nhanh (fast-retry) mà không cần AI can thiệp.
+- **Targeted Self-Reflection**: Khi test lỗi, thay vì hỏi lại mù quáng, hệ thống parse log `FAILED`/`ERROR` hoặc dùng AST Patcher để chắp vá hàm/method cụ thể. Nếu coverage dưới 80%, quá trình reflection vẫn tiếp tục để tăng độ phủ.
+- **Giới hạn tài nguyên (Sandbox Limits)**: Mã do AI tạo chạy trong môi trường có kiểm soát (UID/GID riêng, timeout, RAM, số processes) để tránh lạm dụng hệ thống.
+
+---
+
+## 🧠 Nền tảng AI và Kỹ thuật Lõi (Technical Overview)
+
+Bên dưới pipeline trên, UTcoder sử dụng các kỹ thuật sau:
+
+| Kỹ thuật | Thành phần | Vai trò hiện tại |
+|---|---|---|
+| Autoregressive causal language modelling | `core/llm.py` | Sinh test theo token bằng model Ollama local |
+| Dense text embeddings | `core/vectorstore.py` | Biến source/ví dụ thành vector để tìm kiếm ngữ nghĩa |
+| Retrieval-Augmented Generation | ChromaDB + generator | Đưa các đoạn code và mẫu test liên quan vào prompt |
+| Fine-tuning thử nghiệm | `core/dataset/ingest.py` | Có mã SFT/LoRA/QLoRA cũ nhưng không được runtime hay benchmark gọi |
+| Gradient checkpointing & Paged AdamW | Pipeline training | Kỹ thuật tối ưu bộ nhớ khi train/fine-tune |
+| Python-aware splitting | `core/code_parser.py` | Chia source Python theo biên hàm/lớp để phục vụ RAG |
+| Structured output | Prompt + JSON repair | Giảm output thừa/sai JSON trong compile check và behavioral plan |
+| Real execution feedback | `core/sandbox/` | Thay suy đoán bằng compile, pytest và coverage thật |
+
+### 1. Phạm vi Python hiện tại và định hướng đa ngôn ngữ
+
+`core/code_parser.py` có ánh xạ extension cho nhiều ngôn ngữ từ kiến trúc cũ, nhưng luồng được kiểm chứng và benchmark chính thức hiện chỉ dành cho Python:
+
+| Ngôn ngữ | Trạng thái | Ghi chú |
+|---|---|---|
+| Python/pytest | Hỗ trợ chính thức | Có normalize, sandbox, reflection, stability, coverage và mutation |
+| Java/JUnit 5 | Định hướng tương lai | Runner hiện tại chỉ là prototype, chưa có evaluator/preflight chuẩn |
+| C#/xUnit | Định hướng tương lai | Runner hiện tại chỉ là prototype, chưa có evaluator/preflight chuẩn |
+| JavaScript/Jest | Định hướng tương lai | Runner hiện tại chỉ là prototype, chưa có evaluator/preflight chuẩn |
+
+Không dùng kết quả từ các runner prototype để công bố pass rate hoặc so sánh model. Khi mở lại hướng đa ngôn ngữ, mỗi ngôn ngữ phải có dependency offline, resource limit, preflight, dataset unseen và mutation evaluator riêng.
+
+### 2. Trạng thái của SFT, LoRA và QLoRA
+Mặc dù có mã PEFT trong `core/dataset/ingest.py`, hiện tại **hệ thống đang chạy các model LLM gốc** kết hợp RAG. Kết quả benchmark hiện tại (Qwen/Llama) đều là của mô hình không qua fine-tune chuyên biệt.
+
+### 3. Compile check và coverage: Từ AI ước lượng đến thực thi thật
+Trước đây, hệ thống dùng LLM làm "virtual compiler" (AI tự suy đoán code có chạy được không và coverage bao nhiêu). Hiện nay Python luôn chạy test thật và lấy coverage thật. Phần AI review/estimate cùng các runner ngôn ngữ khác chỉ được giữ như mã prototype; chúng không nằm trong tiêu chí pass/fail hoặc benchmark chính thức.
+
+---
+
+## 📈 Đánh giá Kiến trúc Hiện tại (Overall Assessment)
+
+Phần này đặc biệt quan trọng để team nắm được mức độ trưởng thành của từng module:
+
+| Thành phần | Mức trưởng thành | Nhận xét |
+|---|---|---|
+| Ollama local inference | Cao | Riêng tư, dễ đổi model; chất lượng phụ thuộc model 7B/8B |
+| Dense embedding + RAG | Cao | Có dataset gate và atomic collection activation |
+| Mã thử nghiệm LoRA/QLoRA | Chưa tích hợp | Có trong `ingest.py`, không được runtime/benchmark sử dụng |
+| AI compile/coverage fallback | Prototype | Không dùng làm ground truth hoặc kết quả công bố |
+| Python sandbox + reflection | Cao | Dùng lỗi và coverage runtime thật, có resource limit |
+| Behavioral probing | Khá | Tốt cho hàm thuần; OOP/dependency ngoài phải route sang code/mocking |
+| Python benchmark evaluator | Cao | Có hard gate, stability, branch và mutation |
+| UI/API/VS Code | Khá | Nhiều cách truy cập nhưng deployment public cần auth/TLS |
+
+> So với việc chỉ gọi LLM trực tiếp, UTcoder bổ sung context RAG, chuẩn hóa output, chạy test thật, tự sửa lỗi có định hướng và chấm điểm qua mutation. Trọng tâm gần hạn là nâng chất lượng Python và khả năng unseen. Java/C#/JavaScript chỉ là định hướng sau khi pipeline Python đạt độ ổn định mong muốn.
+
+---
+
+## 💻 Giao Diện & Tích Hợp (Interfaces)
+
+Gradio và REST API là hai process riêng nhưng cùng gọi pipeline Python đã kiểm chứng. `main.py` chạy UI trên cổng 7860; `server.py` chạy API trên cổng 8000 để phục vụ VS Code và automation.
+
+| Giao diện / API | Vai trò / Cách dùng |
+|---|---|
+| **Gradio Web UI** | Giao diện kéo thả trực quan (`http://localhost:7860`). |
+| **VS Code Extension** | Chỉ hiện trên file `.py`; gọi REST API, chờ sandbox + reflection và chỉ ghi file khi server trả candidate đã được chấp nhận. |
+| `GET /api/health` | Kiểm tra Ollama/model, ChromaDB và dependency sandbox; thêm `?deep=1` để chạy preflight thật. |
+| `POST /api/generate` | Sinh test qua RAG → Ollama → pytest/coverage → self-reflection; không trả code chưa đạt gate 80%. |
+| `POST /api/compile-check` | Kiểm tra test Python bằng sandbox thật. |
+| `POST /api/coverage` | Đo coverage Python bằng sandbox thật. |
+
+API mặc định chỉ listen ở `127.0.0.1:8000` trong mô hình hybrid. Extension kết nối qua SSH local-forward, vì vậy không cần public cổng 8000:
 
 ```bash
-# 1. Install Ollama and pull a code model
-ollama pull deepseek-coder:6.7b
-ollama pull nomic-embed-text
-
-# 2. Install UTcoder
-git clone <repo-url> && cd UTcoder
-pip install -r requirements.txt
-
-# 3. Launch (choose one)
-python main.py            # Gradio Web UI → http://localhost:7860
-python server.py          # REST API      → http://localhost:8000
+ssh -N -L 8000:127.0.0.1:8000 <user>@<server-ip>
 ```
 
-**VS Code Extension:** Install from the `vscode-extension/` directory, right-click any source file, and select "UTcoder: Generate Unit Tests".
+Nếu đặt `UTCODER_API_TOKEN` trên server, chạy command **UTcoder: Set API Token** trong VS Code để lưu cùng giá trị bằng SecretStorage. API có giới hạn kích thước body, hỗ trợ timeout/cancel phía extension và chỉ cho một lượt generation tại một thời điểm để tránh hai request tranh RAM/GPU.
 
 ---
 
-## 📁 Project Structure (At a Glance)
+## 🚀 Hướng Dẫn Cài Đặt & Chạy Nhanh (Quick Start)
 
-```
-UTcoder/
-├── main.py, server.py          # Entry points (UI + API)
-├── core/
-│   ├── llm.py                  # Ollama LLM wrapper
-│   ├── generator.py            # Test generation pipeline
-│   ├── vectorstore.py          # ChromaDB + RAG
-│   ├── code_parser.py          # Language-aware code chunking
-│   ├── compiler.py             # AI-based compile checking
-│   ├── coverager.py            # AI-based coverage analysis
-│   └── dataset/ingest.py       # LoRA/QLoRA fine-tuning pipeline
-├── ui/app.py                   # Gradio web interface
-└── vscode-extension/           # VS Code extension (TypeScript)
-```
+### Cấu hình (Config)
+Toàn bộ cấu hình hệ thống nằm ở `config.json` và các biến môi trường (Environment Variables). Không còn các file `config.local.json` riêng lẻ.
+Một số biến quan trọng:
+- `UTCODER_OLLAMA_BASE_URL`: Địa chỉ Ollama (mặc định `http://localhost:11434`).
+- `UTCODER_LLM_MODEL` / `UTCODER_LLM_TEMPERATURE`: Mô hình LLM và nhiệt độ mặc định (mặc định 0.1).
+- `UTCODER_CHROMA_DIR`: Nơi lưu trữ vector DB (mặc định `./chroma_db`).
+- `UTCODER_API_HOST` / `UTCODER_API_PORT`: địa chỉ bind riêng của REST API.
+- `UTCODER_API_TOKEN`: bearer token tùy chọn; nên đặt nếu API không hoàn toàn nằm sau SSH/firewall.
+- Sandbox Limits: `UTCODER_EVAL_MAX_PROCESSES`, `UTCODER_EVAL_MUTATION_TIMEOUT`, v.v.
 
----
+*(Tạo file `.env` từ `.env.example` nếu cần ghi đè, không commit `.env`)*
 
-## 🏗️ System Architecture
+### Mô hình 1: Hybrid (Dành cho Production / Team nhỏ)
+*Tách AI chạy ở Local PC có GPU. Code và Server chạy ở máy chủ Ubuntu.*
 
-```
-┌──────────────────────────────────────────────────┐
-│                   UI LAYER                       │
-│  ┌─────────────────┐      ┌───────────────────┐ │
-│  │  Gradio Web App  │      │  VS Code Extension│ │
-│  │  (drag & drop)   │      │  (right-click)    │ │
-│  └────────┬─────────┘      └────────┬──────────┘ │
-│           │                         │             │
-├───────────┼─────────────────────────┼─────────────┤
-│           │      REST API (server.py)            │
-│           ▼                                      │
-│  ┌──────────────────────────────────────────┐   │
-│  │  POST /api/generate     (test gen)       │   │
-│  │  POST /api/compile-check (syntax check)  │   │
-│  │  POST /api/coverage     (coverage est.)  │   │
-│  │  GET  /api/health       (server status)  │   │
-│  └────────────────┬─────────────────────────┘   │
-│                   │                              │
-├───────────────────┼──────────────────────────────┤
-│                   ▼  CORE LAYER                  │
-│  ┌──────────────────────────────────────────┐   │
-│  │  generator.py (orchestrator)             │   │
-│  │     │                                     │   │
-│  │     ├── code_parser.py ─── chunk code     │   │
-│  │     ├── vectorstore.py ── embed + index   │   │
-│  │     ├── RAG retrieval ─── top-4 chunks    │   │
-│  │     └── llm.py ────────── stream prompt   │   │
-│  │                                           │   │
-│  │  compiler.py  (LLM-as-compiler)           │   │
-│  │  coverager.py (LLM-as-coverage-analyst)   │   │
-│  │  sandbox/     (Pytest + Mutmut execution) │   │
-│  └──────────────────────────────────────────┘   │
-│                                                   │
-│  ┌──────────────────────────────────────────┐   │
-│  │  TRAINING PIPELINE (core/dataset/)        │   │
-│  │  CSV → JSONL → LoRA/QLoRA → Adapter      │   │
-│  └──────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────┘
+1. **Trên máy Local (PC có GPU):**
+   ```bash
+   ollama pull qwen2.5-coder:7b && ollama pull llama3.1:8b && ollama pull nomic-embed-text
+   ssh -N -R 11434:127.0.0.1:11434 <user>@<server-ip>
+   ```
+
+2. **Trên Server Ubuntu:**
+   ```bash
+   docker compose -f docker-compose.server.yml build utcoder
+   docker compose -f docker-compose.server.yml up -d utcoder utcoder-api
+   # Chạy kiểm tra (Preflight)
+   docker compose -f docker-compose.yml exec utcoder python -m core.sandbox.preflight
+   ```
+
+### Mô hình 2: All-in-one (Dành cho Phát triển / Thử nghiệm)
+*Chạy cả Server và AI trên cùng 1 máy có GPU (Cần Docker NVIDIA Toolkit).*
+```bash
+docker compose up -d
+docker compose exec ollama ollama pull qwen2.5-coder:7b
+docker compose exec ollama ollama pull llama3.1:8b
+docker compose exec ollama ollama pull nomic-embed-text
 ```
 
 ---
 
-## 🔄 Pipeline Deep-Dive: From File Upload to Test Output
+## 📁 Cấu Trúc Mã Nguồn (Project Structure)
 
-Here is the exact data flow when a user uploads a file and clicks "Generate":
-
-```
-User Uploads File
-       │
-       ▼
-┌─────────────────────────────────────────────────┐
-│ 1. LANGUAGE DETECTION & PARSING                 │
-│                                                  │
-│    code_parser.py                                │
-│       │ detect_language(file_name) → "python"    │
-│       │ parse_code(file, source) → chunks       │
-│       │                                          │
-│    LangChain RecursiveCharacterTextSplitter      │
-│       │ chunk_size=1000, overlap=150             │
-│       │ language-aware separators                │
-│       │   Python: def, class, \n\n, \n, etc.    │
-│       │   Java:   class, {, }, ;, \n\n, etc.    │
-│       └────────────────────────────────────┬──────┘
-│                                            │
-├────────────────────────────────────────────┼──────┤
-│ 2. VECTOR EMBEDDING & INDEXING             │      │
-│                                            ▼      │
-│    vectorstore.py                                 │
-│       │ OllamaEmbeddings(model="nomic-embed-text")│
-│       │   each chunk → 768-dim vector             │
-│       │                                           │
-│       │ ChromaDB (PersistentClient)                │
-│       │   collection_name = "utcoder_{filename}"  │
-│       │   delete stale collection                 │
-│       │   Chroma.from_documents(docs, embeddings) │
-│       └────────────────────────────────────┬──────┘
-│                                            │
-├────────────────────────────────────────────┼──────┤
-│ 3. RAG RETRIEVAL                          │      │
-│                                            ▼      │
-│    vectorstore.similarity_search(                │
-│        query="functions methods classes...",     │
-│        collection_name=..., k=4                  │
-│    )                                              │
-│       │ cosine similarity search                  │
-│       │ returns top-4 most relevant chunks        │
-│       └────────────────────────────────────┬──────┘
-│                                            │
-├────────────────────────────────────────────┼──────┤
-│ 4. PROMPT CONSTRUCTION                    │      │
-│                                            ▼      │
-│    generator.py                                   │
-│       │ system_prompt:                             │
-│       │   "You are a senior software engineer..."  │
-│       │   + language-specific instructions         │
-│       │   + test framework from config             │
-│       │                                            │
-│       │ user_prompt:                                │
-│       │   source code (raw)                        │
-│       │   + RAG context_block                      │
-│       └────────────────────────────────────┬──────┘
-│                                            │
-├────────────────────────────────────────────┼──────┤
-│ 5. LLM INFERENCE (Streaming)              │      │
-│                                            ▼      │
-│    llm.py → ChatOllama.stream([                  │
-│        {"role": "system", "content": ...},       │
-│        {"role": "user", "content": ...}          │
-│    ])                                             │
-│       │ model autoregressively generates tokens   │
-│       │ yields each token to UI in real-time      │
-│       └────────────────────────────────────┬──────┘
-│                                            │
-├────────────────────────────────────────────┼──────┤
-│ 6. POST-PROCESSING & SELF-REFLECTION      │      │
-│                                            ▼      │
-│    _clean_generated_code()                        │
-│       │ strip markdown fences (```...```)         │
-│       │                                           │
-│    python_sandbox.py                              │
-│       │ run pytest + coverage + mutmut            │
-│       │ if coverage < 80% or error: feed error    │
-│       │ log back to LLM and retry (max 3 attempts)│
-│       └──────────────────────────────────────────┘
-│                                                  │
-│  User Sees:  ✓ Generated file ready for download │
-│             [Visual Coverage Highlighting UI]    │
-└──────────────────────────────────────────────────┘
+Bản đồ mã nguồn giúp team dễ dàng theo dõi:
+```text
+UT-coder/
+├── config.json                       # Cấu hình trung tâm
+├── main.py / server.py               # Entry points (Gradio UI / REST API)
+├── docker-compose.yml                # Cấu hình Docker
+├── prepare_server.py                 # Script tạo gói utcoder_server.zip để deploy
+│
+├── core/                             # LÕI HỆ THỐNG
+│   ├── llm.py                        # Gọi Ollama
+│   ├── generator.py                  # Kịch bản chính (RAG + AI + Sandbox)
+│   ├── vectorstore.py                # ChromaDB
+│   ├── source_analyzer.py            # Phân tích AST, quyết định chiến lược
+│   ├── behavioral_testing.py         # Sandbox probe
+│   ├── ast_patcher.py                # Vá test có mục tiêu (Reflection)
+│   │
+│   ├── dataset/                      # Quản lý Dữ liệu Mẫu
+│   │   ├── valid_dataset.json        # Dữ liệu chuẩn
+│   │   └── embed_rag.py              # Script nạp dữ liệu vào ChromaDB
+│   │
+│   ├── sandbox/                      # Môi trường Sandbox
+│   │   ├── python_sandbox.py         # Pytest & Coverage
+│   │   └── internal/eval_runner.py   # Advanced Evaluator (Mutmut, Stability)
+│   │
+│   └── benchmark/                    # Benchmark model + RAG ablation
+│       ├── evaluate_models.py        # 50 task/model, tự chain workbench RAG
+│       └── rag_ablation/             # 20 project-task, RAG ON/OFF ghép cặp
+│
+├── python_codegen_benchmark_20/      # Fixtures benchmark
+├── tests/                            # Unit tests của chính dự án UTcoder
+├── ui/                               # Giao diện Gradio
+└── vscode-extension/                 # Source extension VS Code
 ```
 
 ---
 
-## 🧠 Deep Learning Techniques
+## 🛠️ Các Lệnh Hữu Ích
 
-### Overview Table
+**Nạp lại CSDL RAG (ChromaDB)** (Chỉ chạy khi thêm/sửa file `valid_dataset.json`):
+```bash
+python core/dataset/prepare_rag_dataset.py --write
+python core/dataset/embed_rag.py
+```
 
-| # | Technique | Category | Role in UTcoder | Original LLM | UTcoder Advantage |
-|---|-----------|----------|-----------------|--------------|-------------------|
-| 1 | **Autoregressive Causal Language Modelling** | Inference | Core text generation — produces tests, compile checks, and coverage analyses token by token via `ChatOllama` | Generates free-form text from a raw prompt | Structured system prompts with language-specific instructions, framework constraints, and JSON output schemas |
-| 2 | **Dense Text Embeddings** (Vector Representations) | Inference | Converts code chunks into 768-dimensional vectors via `OllamaEmbeddings` for semantic similarity search | No ability to search or rank document relevance | Enables efficient semantic search over code, selecting the most relevant sections for the prompt |
-| 3 | **Retrieval-Augmented Generation (RAG)** | Inference | Retrieves top-4 relevant code chunks from ChromaDB and injects them into the LLM prompt as additional context | Only sees raw source file — no structured retrieval of related code | Provides function signatures, class hierarchies, and code patterns as context, enabling more informed test generation |
-| 4 | **Parameter-Efficient Fine-Tuning (PEFT) — LoRA** | Training | Inserts low-rank adapter matrices into attention layers, specialising the model for test generation with minimal parameter changes | Generic code knowledge; not specialised for unit test generation | Produces higher-quality, more focused test outputs without full fine-tuning costs |
-| 5 | **QLoRA (4-bit Quantisation + LoRA)** | Training | Loads the base model in 4-bit NF4 with double quantisation, enabling fine-tuning on 6GB GPUs | Standard fine-tuning requires 24GB+ VRAM for 7B models | Democratises fine-tuning — consumer GPU accessible |
-| 6 | **Gradient Checkpointing** | Training | Recomputes activations during backpropagation instead of storing them | Standard training stores all intermediate activations | Enables longer sequences and larger models within the same memory budget |
-| 7 | **Paged AdamW 8-bit Optimizer** | Training | Offloads optimizer states to CPU RAM when GPU memory is exhausted | Standard AdamW keeps full-precision states in GPU memory (~8 bytes/param) | Dramatically reduces GPU memory pressure |
-| 8 | **Cosine LR Scheduling with Warmup** | Training | Warmup phase → high cosine LR → fine-grained decay for stable convergence | Constant or linear LR may overshoot minima or converge poorly | Stable early training followed by aggressive exploration then fine-grained convergence |
-| 9 | **Supervised Fine-Tuning (SFT) with Chat Templates** | Training | Converts the dataset into chat-format messages (system/user/assistant) and trains with `SFTTrainer` | Pre-trained on raw text/code, not instruction format | Teaches the model to follow structured instructions (persona + task + output constraints) |
-| 10 | **Language-Aware Recursive Text Splitting** | Preprocessing | Splits code at language-specific syntax boundaries for coherent chunks | No code chunking — full file as a single block | Preserves code structure so each chunk remains semantically meaningful |
+**Đóng gói Server để Deploy**:
+```bash
+python prepare_server.py
+```
+> Script này gói gọn file cấu hình và mã nguồn ra `utcoder_server.zip` (loại bỏ markdown, tests, log, raw dataset) kèm theo ChromaDB hiện tại.
+
+Image production hiện chỉ cài Python và evaluator Python. Java/Maven, Node.js và .NET không còn được cài trong Docker image; đa ngôn ngữ là định hướng tương lai và sẽ cần image/evaluator riêng.
+
+**Chạy Regression Tests của Dự án**:
+```bash
+python -m pytest -q
+```
+
+**Chạy/resume benchmark chính rồi tự động chuyển sang RAG ablation**:
+
+```bash
+python core/benchmark/evaluate_models.py
+```
+
+Chi tiết dataset, kết quả riêng và cách chạy từng điều kiện nằm trong `core/benchmark/BENCHMARK.md`.
+
+**Build và cài VS Code extension**:
+
+```bash
+cd vscode-extension
+npm ci
+npm run compile
+npx @vscode/vsce package --out utcoder-vscode.vsix
+code --install-extension utcoder-vscode.vsix
+```
+
+Sau khi server chạy, mở SSH local-forward ở trên rồi đặt `utcoder.serverUrl=http://localhost:8000`. Chi tiết nằm trong `vscode-extension/README.md`.
 
 ---
 
-### 1. Local LLM Inference — Autoregressive Causal Language Modelling
-
-**File:** `core/llm.py`
-
-Uses `ChatOllama` from LangChain, which wraps Ollama's local LLM inference. The model is a causal (autoregressive) transformer that generates one token at a time, conditioned on all previous tokens.
-
-```python
-@lru_cache(maxsize=1)
-def get_llm() -> ChatOllama:
-    cfg = get_config()["llm"]
-    return ChatOllama(
-        model=cfg["model"],
-        temperature=cfg.get("temperature", 0.3),
-    )
-```
-
-The system prompt passed to the LLM includes:
-- Language-specific testing instructions (pytest conventions, JUnit annotations, xUnit patterns, Jest idioms)
-- Test framework specification (configurable per language in `config.json`)
-- Output format constraints (JSON schema for compile checks, code-only for generation)
-
-**Achievements:**
-- ✅ **Zero data leaves the machine** — complete privacy for proprietary codebases
-- ✅ No API costs per generation
-- ✅ Configurable model backend (DeepSeek Coder, CodeLlama, Llama 3, etc.)
-- ✅ Streaming output for real-time display
-
-**Limitations:**
-- ❌ Smaller local models (7B) lag behind cloud APIs (GPT-4, Claude) in reliability
-- ❌ CPU-only inference is slow; GPU acceleration strongly recommended
-- ❌ Prompt sensitivity — small changes can significantly alter output quality
-
----
-
-### 2. Dense Text Embeddings + Retrieval-Augmented Generation (RAG)
-
-**Files:** `core/vectorstore.py`, `core/code_parser.py`
-
-Code chunks are embedded into 768-dimensional dense vectors via `OllamaEmbeddings` (default embedding model: `nomic-embed-text`) and stored in ChromaDB for cosine similarity search.
-
-```
-Source Code ──→ Language-Aware Splitter ──→ Embedder ──→ ChromaDB Index
-                                                           │
-User Query ──→ Embedder ──→ ChromaDB Similarity Search ←──┘
-                                                           │
-                                              Top-4 chunks injected into LLM prompt
-```
-
-**Chunking strategy** (language-specific separators preserve code structure):
-
-| Extension | Language | Split Separators |
-|-----------|----------|-----------------|
-| `.py` | Python | `def`, `class`, `return`, `import` |
-| `.java` | Java | `{`, `}`, `;`, `public`, `class` |
-| `.cs` | C# | `{`, `}`, `;`, `public`, `class` |
-| `.js` / `.jsx` / `.mjs` / `.cjs` | JavaScript | `function`, `class`, `=>`, `{`, `}` |
-
-```python
-# Indexing
-vs.index_documents(docs, col_name)
-
-# Retrieval
-context_snippets = vs.similarity_search(
-    query=f"functions methods classes interfaces in {file_name}",
-    collection_name=col_name, k=4,
-)
-```
-
-**Achievements:**
-- ✅ Context-aware test generation with semantically retrieved code context
-- ✅ Persistent ChromaDB store — embeddings survive between sessions
-- ✅ Language-aware chunking preserves code structure integrity
-- ✅ Collection-per-file isolation prevents cross-contamination between different source files
-
-**Limitations:**
-- ❌ Synchronous re-indexing on every generation call (deletes & recreates the collection)
-- ❌ Single embedding model (`nomic-embed-text`) — not specialised for code compared to CodeBERT, GraphCodeBERT, etc.
-- ❌ Fixed 1000-char chunk size — large functions get split mid-body
-- ❌ No hierarchical retrieval (flat chunks only, no class/function tree awareness)
-
----
-
-### 3. Supervised Fine-Tuning (SFT) + LoRA / QLoRA
-
-**File:** `core/dataset/ingest.py`
-
-A complete fine-tuning pipeline that specialises a base LLM for unit test generation using the CodeRM_UnitTest dataset. Designed from the ground up for **6 GB GPU VRAM**.
-
-#### Data Flow
-
-```
-CSV Dataset        ──→  Chat-Format JSONL    ──→  SFTTrainer     ──→  LoRA Adapter
-(task_id,                (system + user +         (HuggingFace        (saved to
- question,                assistant messages)      Transformers)      finetune_output/)
- code_gt,
- unit_tests)
-```
-
-#### Memory Optimisation Stack
-
-| Technique | What It Does | Memory Saving |
-|-----------|-------------|---------------|
-| **4-bit NF4 Quantisation** | Quantises model weights to 4-bit normal float format | ~4× vs 16-bit |
-| **Double Quantisation** | Quantises the quantization constants themselves | ~0.5 GB additional |
-| **LoRA (rank=16)** | Trains only ~0.1% of parameters via low-rank adapters | ~10× vs full fine-tune |
-| **Gradient Checkpointing** | Recomputes activations on-the-fly instead of storing them | ~3× reduction |
-| **Paged AdamW 8-bit** | Offloads optimizer states to CPU RAM when GPU is full | ~2× reduction |
-| **Gradient Accumulation (4 steps)** | Simulates batch_size=4 with batch_size=1 memory usage | 4× effective batch |
-
-```python
-# BitsAndBytes 4-bit config
-quant_cfg = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_quant_type="nf4",
-)
-
-# LoRA config (targeting all attention projection layers)
-lora_cfg = LoraConfig(
-    r=16, lora_alpha=32, lora_dropout=0.05,
-    target_modules=["q_proj", "v_proj", "k_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj"],
-)
-```
-
-**Achievements:**
-- ✅ Memory-efficient: fine-tunes 7B models on consumer GPUs with 6 GB VRAM
-- ✅ Complete CLI pipeline: `python -m core.dataset.ingest train` handles ingestion → formatting → training → evaluation
-- ✅ Chat template handling with automatic fallback for models missing `chat_template`
-- ✅ Optional ChromaDB integration for retrieval-augmented training
-- ✅ LoRA adapters are modular, swappable, and shareable — enabling task-specific model specialisation
-
-**Limitations:**
-- ❌ Short context window (default `max_seq_length=512`) — limits test complexity
-- ❌ Hardcoded to CodeRM_UnitTest dataset schema (task_id, question, code_ground_truth, unit_tests columns)
-- ❌ All training samples use the same system prompt — may limit framework/style diversity
-- ❌ LoRA-only — no IA3, AdaLoRA, or full fine-tuning support
-- ❌ Single-GPU only
-
----
-
-### 4. AI-Based Compile Checking (Virtual Compiler)
-
-**File:** `core/compiler.py`
-
-Uses the LLM to simulate a compiler — reviewing generated test code for syntax errors, missing imports, incorrect API usage, and common mistakes without actually compiling or running anything.
-
-```
-Test Code ──→ LLM (with language-specific checklist)
-                  │
-                  ▼
-            JSON Response
-             ├── has_issues: true/false
-             ├── issues: [{description, line_reference, suggestion}]
-             └── overall_assessment: string
-```
-
-**Key design decisions:**
-- Language-specific review checklists (Python: indentation, imports; Java: annotations, generics; C#: using directives, attributes; JS: async/await, module paths)
-- Robust JSON extraction pipeline: strip markdown fences → regex JSON extraction → clean control characters → parse
-- Fallback retry with stricter "JSON only" prompt on parse failure
-- `quick_assessment()` shorthand returns a single word (GOOD / MINOR_ISSUES / BROKEN)
-
-**Achievements:**
-- ✅ Language-agnostic virtual compiler — works without any real compiler/runtime installed
-- ✅ Structured JSON output with robust parsing and retry logic
-- ✅ Fallback mechanism ensures graceful degradation on parse failures
-- ✅ Quick one-word assessment for rapid feedback
-
-**Limitations:**
-- ❌ **Hallucination-prone** — may flag false positives or miss real errors depending on model quality
-- ❌ No actual compilation — cannot catch runtime errors, logic bugs, or type-level issues
-- ❌ Significant token and latency overhead
-- ❌ JSON parsing remains fragile despite robust fallback strategies
-
----
-
-### 5. AI-Based Coverage Analysis (Virtual Coverage)
-
-**File:** `core/coverager.py`
-
-Uses the LLM to estimate code coverage by analysing line-numbered source code alongside generated test code — without executing anything.
-
-```
-Source Code (with line numbers) ──┐
-                                  ├──→ LLM ──→ JSON Response
-Test Code                       ──┘         │
-                                             ├── coverage_pct: 0–100
-                                             ├── covered_items: [function names]
-                                             ├── uncovered_items: [function names]
-                                             ├── covered_lines: [line numbers]
-                                             ├── uncovered_lines: [line numbers]
-                                             └── suggestions: [improvement ideas]
-```
-
-**Key design decisions:**
-- Source code is passed with line numbers (`_add_line_numbers()` helper) so the LLM can reference specific lines
-- Conservative bias in the prompt: "If unsure whether a line is tested, mark it uncovered" — reduces overestimation
-- Coverage percentage clamped to 0–100, line numbers filtered to valid range
-- Results rendered visually in the Gradio UI: progress bar, colour-coded tags (≥80% green, ≥50% amber, <50% red)
-
-**Achievements:**
-- ✅ Zero-execution coverage — works for any language, even without CI/CD toolchains
-- ✅ Line-level granularity with 1-based line number tracking
-- ✅ Conservative bias reduces overestimation
-- ✅ Rich visual UI with progress bars and colour-coded percentages
-
-**Limitations:**
-- ❌ **Fundamentally unreliable** — coverage is a runtime property; the LLM can only *guess*
-- ❌ No branch/path coverage — cannot analyse complex control flow
-- ❌ Context-window limited — large files may be truncated
-- ❌ Cannot detect test *quality* (mutation testing) — only whether lines are *visited*, not whether bugs are caught
-
----
-
-### 6. Language-Aware Code Parsing
-
-**File:** `core/code_parser.py`
-
-Maps file extensions to programming languages and uses LangChain's `RecursiveCharacterTextSplitter` with language-specific syntax separators.
-
-| Extension | Language | LangChain Language |
-|-----------|----------|--------------------|
-| `.py` | Python | `Language.PYTHON` |
-| `.java` | Java | `Language.JAVA` |
-| `.cs` | C# | `Language.CSHARP` |
-| `.js` / `.jsx` / `.mjs` / `.cjs` | JavaScript | `Language.JS` |
-
-Each chunk is tagged with metadata (`source`, `language`, `chunk_index`) for traceability through the pipeline.
-
-**Achievements:**
-- ✅ Language-appropriate chunk boundaries preserve code structure (functions, classes stay intact)
-- ✅ Metadata enrichment for traceability
-- ✅ Visual icon mapping for UI display (🐍 ☕ ⚡ 📜)
-
-**Limitations:**
-- ❌ Only 4 languages — no Go, Rust, Ruby, C/C++, or TypeScript-specific parsing
-- ❌ Static 1000-char chunks — not adaptive to function complexity
-- ❌ No import/dependency analysis or cross-file reference resolution
-
----
-
-### 7. Dual-Interface Architecture
-
-**Files:** `main.py` (Gradio), `server.py` (REST), `vscode-extension/src/extension.ts` (VS Code)
-
-Three distinct interfaces targeting different developer workflows, all backed by the same core pipeline:
-
-| Interface | Technology | How to Use |
-|-----------|-----------|-----------|
-| **Gradio Web UI** | Python (Gradio) | `python main.py` → drag-and-drop files, stream output, view analysis panels |
-| **VS Code Extension** | TypeScript + REST | Right-click any file → "UTcoder: Generate Unit Tests" or `Ctrl+Alt+G` |
-| **REST API** | Python `http.server` | `python server.py` → programmatic endpoints for CI/CD integration |
-
-**Achievements:**
-- ✅ Multi-channel access for different developer workflows
-- ✅ Deep VS Code integration: context menus, keyboard shortcuts, automatic `tests/` directory detection
-- ✅ Clean REST interface enables CI/CD pipeline integration
-- ✅ Rich visual analytics in Gradio: styled HTML with progress bars, colour-coded tags, card layouts
-- ✅ Comprehensive CSS theming system with CSS custom properties for maintainability
-
-**Limitations:**
-- ❌ No authentication/authorisation on the HTTP server
-- ❌ Plain HTTP only — no HTTPS
-- ❌ Gradio app and REST server share no state — redundant configuration between `config.json` and VS Code settings
-- ❌ REST API buffers full response before returning — no streaming for API callers
-
----
-
-## 📊 Overall Assessment
-
-### Maturity Matrix
-
-| Technique | Maturity | Reliability | Innovation | Practical Utility |
-|-----------|----------|-------------|------------|------------------|
-| Local LLM Inference (Ollama) | 🟢 High | 🟡 Medium | 🟡 Medium | 🟢 High |
-| Dense Text Embeddings + RAG | 🟢 High | 🟢 High | 🟡 Medium | 🟢 High |
-| LoRA Fine-Tuning (PEFT) | 🟢 High | 🟡 Medium | 🟡 Medium | 🟢 High |
-| Deep Learning Pipeline (QLoRA + SFT + Grad. Checkpoint. + 8-bit Opt.) | 🟢 High | 🟢 High | 🟢 High | 🟢 High |
-| AI Compile Check (Virtual Compiler) | 🟡 Medium | 🟡 Medium | 🟢 High | 🟡 Medium |
-| AI Coverage Analysis (Virtual Coverage) | 🔴 Low | 🔴 Low | 🟢 High | 🔴 Low |
-| Self-Reflection Sandbox (Real Execution) | 🟢 High | 🟢 High | 🟢 High | 🟢 High |
-| Language-Aware Code Parsing | 🟢 High | 🟢 High | 🔴 Low | 🟢 High |
-| Dual-Interface Architecture | 🟢 High | 🟢 High | 🟡 Medium | 🟢 High |
-
-### Advantages Over Using Original (Base) LLMs Alone
-
-| Capability | Base LLM Alone | UTcoder (Base LLM + Pipeline) |
-|------------|---------------|------------------------------|
-| **Test generation** | Generic code completion; unstructured, unreliable output | Structured, framework-specific tests with proper imports, fixtures, mocking, and naming conventions |
-| **Code understanding** | Raw file content only; limited by context window | Augmented with RAG-retrieved context (function signatures, class structures) |
-| **Output format control** | Free-form text with markdown, explanations, or incomplete code | Clean code extraction: strips fences, prose, and commentary — outputs only valid test code |
-| **Compile checking** | Not available natively | AI-based virtual compiler with structured JSON output |
-| **Coverage estimation** | Not available natively | AI-based coverage analysis with line-level granularity |
-| **Specialisation for testing** | General code knowledge only | Fine-tuned on CodeRM_UnitTest via LoRA — specialised for test generation |
-| **Hardware requirements** | Minimal (inference only) | Fine-tuning requires 6 GB+ VRAM; inference remains lightweight |
-| **Extensibility** | Cannot be updated without deploying a new model | LoRA adapters are modular, swappable, and shareable |
-
-### Key Features of the Deep Learning Pipeline
-
-| Feature | Technique | Implementation Detail |
-|---------|-----------|----------------------|
-| **Privacy-preserving inference** | Local LLM via Ollama | All computation on the user's machine — zero data leaves |
-| **Context-aware generation** | RAG with ChromaDB | Top-4 semantically similar code chunks injected into the prompt |
-| **Memory-efficient fine-tuning** | QLoRA + Gradient Checkpointing + 8-bit Opt. | Fine-tunes 7B models on 6 GB VRAM — ~4× memory reduction |
-| **Structured output enforcement** | Prompt engineering + JSON retry | Forces JSON output with fallback parsing strategies |
-| **Multi-language support** | Language-aware code parsing | 4 languages with framework-specific instructions |
-| **Streaming inference** | `ChatOllama.stream()` | Real-time token display in the Gradio UI |
-| **Chat-aligned training** | `SFTTrainer` + `apply_chat_template` | OpenAI-compatible chat format for instruction-tuned models |
-
-### Summary
-
-**UTcoder is strongest** as a local, privacy-preserving unit test generator augmented with RAG. Its deep learning foundation combines mature inference techniques (autoregressive LLMs, dense embeddings) with carefully optimised training techniques (QLoRA, gradient checkpointing, paged optimizers) to deliver production-quality test generation on consumer hardware.
-
-Its most innovative techniques — **AI-based compile checking and coverage analysis** — are ambitious attempts to bring "virtual" developer tooling to any language without toolchain dependencies. These are inherently limited by their reliance on LLM reasoning rather than actual execution, but they demonstrate a novel direction for AI-assisted development.
-
-The **fine-tuning pipeline** is particularly well-engineered for its target audience: developers with consumer GPUs. By combining QLoRA, gradient checkpointing, and paged AdamW, it achieves an approximately 4× memory reduction over standard LoRA, making model specialisation accessible without cloud compute.
-
----
-
-## 📁 Full Project Structure
-
-```
-UTcoder/
-├── main.py                          # Gradio UI entry point
-├── server.py                        # HTTP REST API server
-├── prepare_server.py                # Server packaging utility (utcoder_server.zip)
-├── DEPLOYMENT.md                    # Server deployment guide
-├── config.json                      # Local configuration
-├── config.server.json               # Server configuration
-├── docker-compose.yml               # Local Docker compose
-├── docker-compose.server.yml        # Server Docker compose
-├── requirements.txt                 # Python dependencies
-├── core/
-│   ├── __init__.py                  # Core package
-│   ├── llm.py                       # Ollama LLM wrapper (cached singleton)
-│   ├── generator.py                 # Test generation pipeline (RAG + LLM + Reflection)
-│   ├── vectorstore.py               # ChromaDB indexing & similarity search
-│   ├── code_parser.py               # Language detection & code chunking
-│   ├── compiler.py                  # AI-based compile checking
-│   ├── coverager.py                 # Visual HTML coverage parser
-│   ├── sandbox/                     # Isolated test execution environment
-│   │   ├── base.py                  # Abstract Sandbox & SandboxResult interfaces
-│   │   └── python_sandbox.py        # Pytest, Coverage, and Mutmut integration
-│   ├── config.py                    # Config file loader
-│   └── dataset/
-│       ├── ingest.py                # Fine-tuning pipeline (LoRA/QLoRA)
-│       ├── split_dataset.py         # CSV splitter utility
-│       ├── CodeRM_UnitTest/         # Training dataset (CSV chunks)
-│       └── CodeRM_UnitTest (test)/  # Validation dataset (CSV chunks)
-├── ui/
-│   ├── app.py                       # Gradio web interface
-│   └── __init__.py                  # UI package
-├── finetune_output/                 # Fine-tuning checkpoints
-└── vscode-extension/                # VS Code extension (TypeScript)
-    ├── package.json                 # Extension manifest
-    ├── src/extension.ts             # Extension logic
-    └── scripts/build.cmd            # Build script
-```
-
----
-
-## 📜 License
-
-This project is provided under the terms included in the VS Code extension LICENSE file.
+## 📚 Tài liệu liên quan
+- [DEPLOYMENT.md](DEPLOYMENT.md): Hướng dẫn chi tiết setup SSH, Docker và xử lý lỗi Ubuntu.
+- [core/benchmark/BENCHMARK.md](core/benchmark/BENCHMARK.md): Chi tiết luật chấm điểm Benchmark, Stability, Mutation.
+- [CHANGELOG.md](CHANGELOG.md): Các thay đổi so với hệ thống ban đầu.

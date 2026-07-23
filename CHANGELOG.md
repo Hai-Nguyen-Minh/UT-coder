@@ -1,41 +1,73 @@
-# UT-Coder: Updates & Enhancements
+# Nhật ký thay đổi UT-Coder
 
-Tài liệu này tổng hợp toàn bộ các tính năng, cải tiến kiến trúc và các file mới đã được thêm vào dự án so với phiên bản gốc trên Git. Trọng tâm của đợt nâng cấp này là **Hệ thống Self-Reflection Sandbox** (Tự động tự kiểm tra và sửa lỗi code) và tối ưu hóa **Môi trường Triển khai Server**.
+Tài liệu này tóm tắt đợt nâng cấp hiện tại so với phiên bản sinh test một lượt ban đầu. Chi tiết vận hành nằm trong `README.md`, `DEPLOYMENT.md` và `core/benchmark/BENCHMARK.md`.
 
----
+## Phạm vi sản phẩm
 
-## 1. Hệ thống Self-Reflection Sandbox (AI Tự Sửa Lỗi)
-Phiên bản cũ chỉ đơn thuần gọi LLM sinh code rồi hiển thị cho người dùng. Phiên bản mới đã tích hợp một "Hộp cát" (Sandbox) cách ly. Code do AI sinh ra sẽ được tự động chạy thử (execute), đo lường mức độ bao phủ (coverage) và thậm chí là đo lường bằng kiểm thử đột biến (mutation testing). Nếu có lỗi hoặc coverage không đạt mốc tối thiểu (80%), AI sẽ nhận được log lỗi để tự viết lại code cho đến khi Pass (tối đa 3 lần thử).
+- Phạm vi được hỗ trợ và benchmark chính thức hiện tại là Python/pytest.
+- Java, C# và JavaScript chỉ là prototype cũ và định hướng tương lai.
+- Config, Docker image, Gradio, REST API và VS Code extension production đều được thu hẹp về Python.
 
-### Các File Thêm Mới:
-- **`core/sandbox/__init__.py`**: Khởi tạo module sandbox.
-- **`core/sandbox/base.py`**: Định nghĩa kiến trúc lõi (`SandboxResult` và `class Sandbox`). Chứa các interface trừu tượng giúp chuẩn hóa đầu ra của Sandbox (kết quả pass/fail, error log, điểm coverage, missing lines) và dọn đường để mở rộng hỗ trợ đa ngôn ngữ trong tương lai (Java, C++, JS...).
-- **`core/sandbox/python_sandbox.py`**: Thực thi Sandbox dành riêng cho Python. File này tự động tạo môi trường tạm thời (temp file), chạy lệnh `pytest`, sử dụng `pytest-cov` để đo lường Coverage, và sử dụng `mutmut` để chạy Mutation Testing. Nó cũng tự động tiêm (inject) file `setup.cfg` để công cụ `mutmut` không bị lỗi khởi tạo.
-- **`core/coverager.py`**: Chịu trách nhiệm phân tích dữ liệu mảng các "dòng code bị sót" (missing_lines) trả về từ Sandbox, từ đó sinh ra một đoạn mã HTML có tô màu đỏ/xanh (Highlight) giúp người dùng trực quan nhìn thấy đoạn code nào chưa được AI viết test.
+## Luồng sinh và self-reflection
 
-### Các File Cũ Được Nâng Cấp:
-- **`core/generator.py`**: Viết lại luồng `generate_unit_tests` thành `generate_with_reflection`. Bổ sung vòng lặp retry (tối đa 3 lần). Nếu code có lỗi hoặc Coverage < 80%, LLM sẽ được mớm thêm Error Log để sửa bài.
+- Thay luồng “LLM sinh rồi trả ngay” bằng `generate_with_reflection`.
+- Test Python được compile, chạy thật bằng pytest và đo Coverage.py trong sandbox.
+- Candidate chỉ được chấp nhận khi pytest pass, coverage hợp lệ và line coverage đạt tối thiểu 80%.
+- Giữ candidate chạy được/có coverage tốt nhất xuyên suốt các lượt reflection.
+- Pytest pass nhưng coverage thấp vẫn kích hoạt coverage reflection nếu còn lượt.
+- Reflection có mục tiêu từ tên test fail/error; AST patcher hỗ trợ function và method trong class.
 
----
+## Behavioral probing và RAG
 
-## 2. Giao diện Người dùng (Gradio UI)
-Giao diện được làm mới theo hướng tinh gọn và tự động hóa cao hơn. Cung cấp ngay kết quả trực quan thay vì bắt người dùng phải đọc log thô.
+- Phân tích source để route giữa `behavioral_probe` và `codegen_with_mocks_or_objects`.
+- JSON plan có repair/structured output, kiểm tra arity runtime và canonical deduplication.
+- Heuristic bổ sung case chỉ ở mức primitive nông; không suy diễn deep shape thiếu chắc chắn.
+- Fast-retry cho thư mục tương đối bị thiếu dựa trên `FileNotFoundError` thực tế.
+- Chuẩn hóa `valid_dataset.json`, giữ ground truth gốc và tạo `rag_tests` riêng.
+- Chỉ mẫu coverage 100%, có assertion, parse và normalize thành công mới được embed.
+- ChromaDB được build vào collection tạm rồi mới thay collection live khi hoàn tất.
 
-### Thay đổi trên `ui/app.py`:
-- **Xóa bỏ tab "Compile Check":** Vì mọi quá trình biên dịch, kiểm thử đều đã được tự động chạy ngầm trong Self-Reflection Sandbox.
-- **Bổ sung Checkbox "Use Self-Reflection Sandbox":** Cho phép người dùng linh hoạt bật/tắt tính năng tự kiểm tra của AI. Nếu tắt, AI sẽ sinh code 1 lần như cũ để tiết kiệm thời gian.
-- **Thêm Tab "📊 Visual Coverage":** Hiển thị trực tiếp file code gốc được tô màu (Highlight). Những dòng nào đã được Unit Test bao phủ sẽ có viền xanh, những dòng chưa được test sẽ bị bôi đỏ.
-- **Hardcode Mốc Target Coverage = 80%:** Tham số này được ẩn đi và cố định trong hệ thống, buộc LLM phải luôn cố gắng sinh ra bài test cover từ 80% trở lên.
+## Sandbox và an toàn
 
----
+- Dùng UID/GID `utcoder-sandbox`, tránh lỗi `RLIMIT_NPROC` do dùng chung tài khoản `nobody` trên Ubuntu.
+- Giới hạn timeout, RAM và số process cho compile, pytest, coverage và mutation.
+- Mỗi stage chạy trong workspace mới; xóa coverage cũ trước mỗi lượt để chống ghost coverage.
+- Phân biệt lỗi hạ tầng với lỗi model; benchmark dừng khi sandbox/evaluator hỏng.
+- Có deterministic preflight cho sandbox và mutation evaluator.
 
-## 3. Server Deployment (Triển khai hệ thống)
-Đã tái cấu trúc cách đóng gói dự án để dễ dàng đưa lên Ubuntu Server, tách bạch giữa việc chạy LLM cục bộ (Ollama) và việc chạy App Server (chỉ call API).
+## Benchmark chính thức
 
-### Các File Thêm Mới:
-- **`DEPLOYMENT.md`**: File hướng dẫn chi tiết từng bước (Step-by-step) cách cấu hình môi trường, cài đặt Docker, mở port trên Ubuntu và cách phân tách 2 cỗ máy (1 máy chuyên chạy LLM và 1 máy chuyên chạy Web Server).
-- **`config.server.json` & `docker-compose.server.yml`**: Các file cấu hình mẫu chuyên dụng cho môi trường Server (khác với môi trường Local).
-- **`prepare_server.py`**: Một script Python tiện ích (Utility). Khi chạy, nó sẽ tự động thu gom các file cốt lõi (core, ui, main, requirements...), bỏ qua các file thừa thãi (chroma_db, pycache), sau đó đóng gói tất cả vào một file **`utcoder_server.zip`**. Script này cũng tự động đổi tên `docker-compose.server.yml` thành `docker-compose.yml` ngay bên trong file Zip, giúp người dùng chỉ việc tải file Zip lên server và chạy.
-- **`patch_ui.py` (Script chạy một lần):** File script được sử dụng trong quá trình vá lỗi (Patch) giao diện của hệ thống để thay thế an toàn các khối mã phức tạp (hiện tại có thể được xóa bỏ).
+- 50 task unseen cho mỗi model `qwen2.5-coder:7b` và `llama3.1:8b`.
+- Đánh giá compile, collection, ba lượt stability, line coverage, branch coverage và mutation score.
+- Điểm mặc định: 55% mutation, 30% branch, 15% line; suite flaky 2/3 chịu hệ số 0,8.
+- Hard-gate fail có điểm 0; mutation chưa hoàn tất để điểm rỗng thay vì suy đoán.
+- Ghi schema/evaluator version, hash, CSV, JSONL và artifact theo model/task.
+- Resume theo model + task + source hash + evaluator version; hỗ trợ rerun hàng fail/incomplete.
+- Có paired comparison, bootstrap CI 95%, bảng trạng thái và biểu đồ chất lượng.
+- Sau mỗi model, gửi `keep_alive=0` và xác nhận Ollama đã giải phóng model khỏi RAM/VRAM.
 
----
+## Cấu hình và triển khai
+
+- Hợp nhất về một `config.json`; xóa `config.local.json` và `config.server.json`.
+- Ghi đè khác biệt môi trường bằng biến `UTCODER_*`.
+- `docker-compose.yml` phục vụ all-in-one; `docker-compose.server.yml` phục vụ hybrid với Ollama local qua reverse SSH.
+- Thu gọn Docker image production về Python-only; bỏ Java/Maven, Node.js và .NET prototype.
+- `prepare_server.py` đóng gói runtime/ChromaDB/dataset đã kiểm chứng, loại Markdown, tests, log, raw dataset và artifact khỏi ZIP server.
+- Thêm `.env.example`, `.dockerignore` và chuẩn hóa `.gitignore`.
+
+## REST API, Gradio và VS Code extension
+
+- Tách `server.py` thành process API Python riêng trên cổng 8000; Gradio chạy độc lập trên cổng 7860.
+- `POST /api/generate` dùng đúng RAG, sandbox và self-reflection; không trả code chưa đạt gate.
+- Health check xác minh Ollama/model thật, ChromaDB và dependency sandbox; `GET /api/health?deep=1` chạy preflight.
+- API có giới hạn request, bearer token tùy chọn, threaded health và khóa một lượt generation để kiểm soát tài nguyên.
+- Thêm service `utcoder-api` vào Compose all-in-one và hybrid; hybrid bind loopback để dùng qua SSH local-forward.
+- Extension chỉ nhận `.py`, dùng timeout/cancel thật, gửi bearer token và chỉ ghi response đã accepted.
+- Sửa callback Gradio sai số lượng output, chỉ nhận `.py` và bắt buộc mọi file tải xuống qua reflection + coverage gate.
+- TypeScript extension đã compile và VSIX đã được đóng gói kiểm chứng.
+
+## Tài liệu
+
+- Giữ và cập nhật đầy đủ System Architecture cùng Pipeline Deep-Dive trong `README.md`.
+- `DEPLOYMENT.md` mô tả kiến trúc local-AI/server-runtime, API và SSH tunnel.
+- `core/benchmark/BENCHMARK.md` giải thích hard gate, mutation policy, công thức điểm và cách diễn giải.

@@ -1,7 +1,7 @@
 {
   "name": "utcoder-vscode",
   "displayName": "UTcoder - AI Unit Test Generator",
-  "description": "Right-click any source file to generate unit tests via the UTcoder server API. Supports Python, Java, C#, JavaScript, and TypeScript.",
+  "description": "Generate sandbox-verified Python pytest tests through the UTcoder server API.",
   "version": "0.2.0",
   "publisher": "utcoder",
   "repository": {
@@ -19,14 +19,14 @@
     "unit test",
     "test generation",
     "AI",
-    "pytest",
-    "JUnit",
-    "xUnit",
-    "Jest"
+    "python",
+    "pytest"
   ],
   "icon": "icon.png",
   "activationEvents": [
-    "onCommand:utcoder.generateTests"
+    "onCommand:utcoder.generateTests",
+    "onCommand:utcoder.checkHealth",
+    "onCommand:utcoder.setApiToken"
   ],
   "main": "./out/extension.js",
   "scripts": {
@@ -49,6 +49,10 @@
       {
         "command": "utcoder.checkHealth",
         "title": "UTcoder: Check Server Health"
+      },
+      {
+        "command": "utcoder.setApiToken",
+        "title": "UTcoder: Set API Token"
       }
     ],
     "keybindings": [
@@ -64,14 +68,14 @@
         {
           "command": "utcoder.generateTests",
           "group": "utcoder@1",
-          "when": "editorLangId =~ /^(python|java|csharp|javascript|typescript)$/"
+          "when": "editorLangId == python"
         }
       ],
       "explorer/context": [
         {
           "command": "utcoder.generateTests",
           "group": "utcoder@1",
-          "when": "resourceFilename =~ /(?i)\\.(py|java|cs|js|ts)$/"
+          "when": "resourceFilename =~ /(?i)\\.py$/"
         }
       ]
     }
